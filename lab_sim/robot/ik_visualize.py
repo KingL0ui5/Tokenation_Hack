@@ -18,9 +18,10 @@ import mujoco
 import numpy as np
 import mink
 
+from scenes.build_lab import load_model
+
 logging.disable(logging.WARNING)
 
-XML = "scenes/lab.xml"
 OUT = "experiments/ik_tour.mp4"
 CAM = "front"
 W, H, FPS = 960, 720, 30
