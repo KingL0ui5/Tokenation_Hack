@@ -8,12 +8,9 @@ from harness.types.state import LabState
 def scientist_solver():
     async def solve(state: TaskState, generate: Generate) -> TaskState:
         lab_state = store_as(LabState)
+        task_graphs_summary = lab_state.task_graphs_summary
         scientist_model = get_model()
         
-        task_graphs_summary = "\n\n".join(
-            f"Task/Skill: {task_name}\nGraph:\n{graph.to_text()}" 
-            for task_name, graph in lab_state.task_graphs.items()
-        )
 
         if not task_graphs_summary:
             task_graphs_summary = "No manipulation tasks have been attempted yet."

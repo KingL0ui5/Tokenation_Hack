@@ -10,13 +10,10 @@ from harness.tools.graph import add_reasoning, close_branch, view_graph
 def technician_solver():
     async def solve(state: TaskState, generate: Generate) -> TaskState:
         lab_state = store_as(LabState)
+        graphs_summary =lab_state.task_graphs_summary
         technician_model = get_model()
-        
-        graphs_summary = "\n\n".join(
-            f"Task: {task_name}\nGraph:\n{graph.to_text()}" 
-            for task_name, graph in lab_state.task_graphs.items()
-        )
-        
+    
+
         if not graphs_summary:
             graphs_summary = "No task graphs have been created yet."
 
