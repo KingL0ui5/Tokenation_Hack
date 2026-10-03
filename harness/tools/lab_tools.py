@@ -174,17 +174,21 @@ def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
             cid = _container(b, container)
             if b.nominal[cid].volume_ul <= 0:
                 _reject(b, "mix", args, f"{cid} is empty")
-            r = b.travel(b.believed_pos(cid))
-            for _ in range(max(1, cycles)):
-                if r["ok"]:
-                    p = b.believed_pos(cid)
-                    b.move_to(p + [0, 0, 0.01], duration_s=0.1)
-                    r = b.move_to(p, duration_s=0.1)
-            landed = b._resolve_landing(cid)
+            sk = b.skills
+            sk.set_active_point("nozzle")
+            r = sk.travel_to(cid, clearance=0.04)
+            if r.ok:
+                r = sk.descend(0.05)                         # nozzle into the liquid
+            for _ in range(max(1, cycles)):                  # pipette up and down
+                if not r.ok:
+                    break
+                sk.descend(-0.015)
+                r = sk.descend(0.015)
+            landed = b._resolve_landing(cid, sk.tip()[:2]) if r.ok else None
             if landed == cid:
                 b.actual[cid].mixed = True
             b.nominal[cid].mixed = True
-            b.park()
+            sk.ascend()
             disc = [] if landed == cid else [f"tip was not inside {cid}; liquid not mixed"]
             return _result(b, "mix", args, {"status": "ok" if not disc else "fault",
                                             "lab_time_min": round(b.clock_min, 2)},
@@ -342,9 +346,15 @@ def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
                 _reject(b, "discard", args, "reagent stock tubes cannot be discarded")
             if bin not in b.contract.waste_bins:
                 _reject(b, "discard", args, f"bin must be one of {list(b.contract.waste_bins)}")
-            b.travel(b.believed_pos(cid))
-            b.travel(b.site_pos(b.contract.waste_bins[bin]["site"]))
-            b.park()
+            sk = b.skills
+            sk.set_active_point("nozzle")
+            r = sk.travel_to(cid, clearance=0.04)            # over the well
+            if r.ok:
+                r = sk.descend(0.05)                         # dip in to withdraw contents
+            sk.ascend()
+            if r.ok:
+                r = sk.travel_to(b.contract.waste_bins[bin]["site"], clearance=0.06)   # over the bin
+            sk.ascend()
             lost = b.actual[cid].volume_ul
             for store in (b.actual, b.nominal):
                 store[cid].remove(store[cid].volume_ul)
@@ -374,12 +384,17 @@ def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
             source = "reagent_water" if "reagent_water" in b.actual else f"reagent_{b.reagents[0]}"
             if b.nominal[source].volume_ul < volume_ul:
                 _reject(b, "check_pipette", args, f"{source} holds {b.nominal[source].volume_ul:.1f} uL")
-            b.travel(b.believed_pos(source))
+            sk = b.skills
+            sk.set_active_point("nozzle")
+            r = sk.travel_to(source, clearance=0.04)         # aspirate from the water tube
+            if r.ok:
+                r = sk.descend(0.05)
             delivered = b._pipetting_error(volume_ul)
             b.actual[source].remove(delivered)
             b.nominal[source].remove(volume_ul)
-            b.travel(b.site_pos("station_bench"))  # balance stands in for the bench station
-            b.park()
+            sk.ascend()
+            sk.travel_to("station_bench", clearance=0.05)     # dispense onto the balance
+            sk.ascend()
             mass = delivered * 1.0 + b.rng["measure"].normal(0, 0.05)
             return _result(b, "check_pipette", args, {"status": "ok", "commanded_ul": volume_ul,
                                                       "mass_mg": round(mass, 2),

@@ -105,13 +105,15 @@ PIPETTE_POS = (0.28, 0.30)         # the (now empty) pipette stand stays here as
 # Pipette mounted rigidly on the hand (fixed child body -> part of the kinematic chain).
 # 180 deg about hand-x flips the authored +z (plunger) up toward the hand and sends the
 # nozzle down past the fingertips; the thin 17 mm side lies along the finger slide axis.
-PIPETTE_MOUNT_POS = (0.0, 0.0, 0.232)     # hand frame; tuned so the handle sits in the fingers
+PIPETTE_MOUNT_POS = (0.0, 0.0, 0.2573)    # hand frame; dropped so the plunger clears the palm by ~1 mm
 PIPETTE_MOUNT_QUAT = (0.0, 1.0, 0.0, 0.0)  # 180 deg about hand-x
 PIPETTE_NOZZLE_Z = -0.008                  # authored nozzle (pipette min-z), body-local
 PIPETTE_TIP_END_Z = -0.058                 # ~50 mm below the nozzle (for a disposable tip)
 PIPETTE_SHAFT_FROMTO = (0, 0, 0.17, 0, 0, 0.022)   # capsule: body/shaft down to ~3 cm above tip
 PIPETTE_SHAFT_R = 0.006
-GRIP_HALF_M = 0.0085               # each finger at 8.5 mm -> ~17 mm opening across the handle
+# Handle is 16.27 mm wide along the finger-slide axis at the grip height (measured from the
+# mesh); each finger sits at half that + 1 mm clearance so the pads don't clip the handle.
+GRIP_HALF_M = 0.00914              # 9.14 mm each -> ~18.3 mm opening (handle 16.27 + ~1 mm/side)
 
 GLASS = "0.90 0.95 1.00 0.25"
 
@@ -376,6 +378,9 @@ def _mount_pipette(bench: mujoco.MjSpec) -> None:
     shaft.size = [PIPETTE_SHAFT_R, 0, 0]
     shaft.group = 3
     shaft.rgba = [1, 0.5, 0, 0.0]              # invisible collider
+    # NOTE (disposable tips, later): when a tip is attached, switch the active IK point to
+    # pipette_tip_end, and extend the no-collision region to cover the WHOLE tip (not just the
+    # last ~3 cm here) -- i.e. shorten this capsule to stop above the attached tip's top.
     for nm, z in (("pipette_nozzle", PIPETTE_NOZZLE_Z), ("pipette_tip_end", PIPETTE_TIP_END_Z)):
         s = pip.add_site()
         s.name, s.pos, s.size, s.group, s.rgba = nm, [0, 0, z], [0.004, 0, 0], 4, [0, 0, 1, 0.8]
