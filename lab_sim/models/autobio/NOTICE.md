@@ -23,8 +23,9 @@ and used unmodified (scaled/positioned only in XML, never edited — see licence
 
 | File | AutoBio source path | Scale | Used for |
 | --- | --- | --- | --- |
-| `tool/pipette.obj` | `assets/tool/pipette.obj` | 0.1 | pipette (visual, single mesh ≈ 199 mm) |
-| `container/centrifuge_1500ul_no_lid.obj` | `assets/container/centrifuge_1500ul_no_lid_vis/visual.obj` | 0.001 | reagent tubes (≈ 13 mm × 40 mm) |
+| `tool/pipette/{body,tube,connector,knob,pusher_mid,pusher_right1,pusher_right2,pusher_right3}_visual.obj` | `assets/tool/pipette/*_visual.obj` | 0.1 | pipette (8 visual parts assembled at a common origin ≈ 199 mm; the single `pipette.obj` is multi-object and MuJoCo only partly loads it) |
+| `container/centrifuge_15ml_body.STL` | `assets/container/centrifuge_15ml_screw_vis/centrifuge_tube_15ml_body.STL` | 0.001 | reagent stock tubes (≈ 16.8 mm × 118.6 mm; body only, no cap) |
+| `container/centrifuge_1500ul_no_lid.obj` | `assets/container/centrifuge_1500ul_no_lid_vis/visual.obj` | 0.001 | (parked) 1.5 mL tube for later rounds (≈ 13 mm × 40 mm) |
 | `rack/centrifuge_10slot/{pillars,lower_plane,upper_plane}.obj` | `assets/rack/centrifuge_10slot_vis/*_visual.obj` | 0.001 | 10-slot tube rack (multi-part) |
 | `rack/tip_box_24slot/{up,low}.obj` | `assets/rack/tip_box_24slot_vis/*_visual.obj` | 0.001 | pipette-tip box (multi-part) |
 | `rack/pipette_rack_tri/{beam,legs}.obj` | `assets/rack/pipette_rack_tri_vis/*_visual.obj` | 0.001 | pipette holder (optional) |

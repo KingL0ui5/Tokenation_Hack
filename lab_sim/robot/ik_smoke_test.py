@@ -30,10 +30,12 @@ STANDOFF = 0.03         # hover this far above a slot; the `approach` primitive'
 # Every slot a primitive will target, grouped so the report is readable.
 TARGETS = {
     "plate (near/far corners + centre)": ["well_A1", "well_A6", "well_D1", "well_D6", "well_B3"],
-    "reservoirs (near -> far)": ["reservoir_buffer", "reservoir_enzyme", "reservoir_substrate",
-                                  "reservoir_inhibitor", "reservoir_stop"],
-    "rack tubes": ["rack_1", "rack_4"],
-    "stations / tools / waste": ["station_reader", "station_incubator", "pipette_grip", "waste"],
+    "reagent tubes (tall 15mL; reach check)": [
+        "reagent_dea", "reagent_tris", "reagent_glycine", "reagent_phosphate", "reagent_pnpp",
+        "reagent_mgcl2", "reagent_zncl2", "reagent_nacl", "reagent_glycerol", "reagent_water",
+        "reagent_naoh", "reagent_pnp_standard"],
+    "stations / tools / waste": ["station_reader", "station_incubator", "tip_box",
+                                  "pipette_grip", "waste"],
 }
 
 
@@ -42,9 +44,8 @@ def site_xpos(model, data, name):
 
 
 def main() -> int:
-    model = mujoco.MjModel.from_xml_path(XML)  # ty: ignore[unresolved-attribute]
+    model = load_model()
     data = mujoco.MjData(model)  # ty: ignore[unresolved-attribute]
-
 
     ee = "attachment_site"
     ee_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, ee)  # ty: ignore[unresolved-attribute]
@@ -62,11 +63,10 @@ def main() -> int:
     # Collision avoidance: keep every robot geom off the fixed lab obstacles, so IK picks a
     # non-colliding arm config instead of the first kinematically-valid one.
     robot_geoms = mink.get_subtree_geom_ids(model, mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "link0"))  # ty: ignore[unresolved-attribute]
-    # Note: the pipette is a grasp *target*, not a fixed obstacle, so it's excluded here.
-    obstacles = ["bench", "plate_collision", "incubator", "plate_reader", "tube_rack",
-                 "pipette_holder", "waste_bin",
-                 "collide_reservoir_buffer", "collide_reservoir_enzyme", "collide_reservoir_substrate",
-                 "collide_reservoir_inhibitor", "collide_reservoir_stop"]
+    # Note: the pipette and the reagent tubes are grasp/aspirate *targets*, not fixed
+    # obstacles, so they're excluded here (the reagent racks themselves are obstacles).
+    obstacles = ["bench", "plate_collision", "incubator", "plate_reader",
+                 "waste_bin", "collide_rackA", "collide_rackB", "collide_tipbox"]
     obstacle_geoms = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, g) for g in obstacles]  # ty: ignore[unresolved-attribute]
     collision_limit = mink.CollisionAvoidanceLimit(
         model, geom_pairs=[(robot_geoms, obstacle_geoms)],
