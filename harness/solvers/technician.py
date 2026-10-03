@@ -5,6 +5,7 @@ from inspect_ai.util import store_as
 from harness.types.state import LabState
 from harness.tools.experiment import run_experiment
 from harness.tools.graph import add_reasoning, close_branch, view_graph
+from harness.tools.lab_tools import lab_tools
 
 @solver
 def technician_solver():
@@ -22,7 +23,7 @@ def technician_solver():
             content=f"""
                 You are the lab technician (Inner Loop: Manipulation).
                 Your job is to execute the scientist's plan using physical mechanics and trajectory vectors inside the lab envioronment.
-                When you attempt an action, you must use the `run_experiment` tool.
+                Use `run_experiment` for tracked experiments and the lab tools for physical lab actions.
                 For each action/skill you perform (like 'pick_up_test_tube'), it will be tracked in a task-specific ReasoningGraph.
 
                 Current Task Graphs:
@@ -33,12 +34,12 @@ def technician_solver():
             """
         ))  # ty: ignore[call-non-callable]
         
-        response = await technician_model.generate(
+        messages, _ = await technician_model.generate_loop(
             state.messages,
-            tools=[run_experiment(), add_reasoning(), close_branch(), view_graph()]
+            tools=[run_experiment(), add_reasoning(), close_branch(), view_graph(), *lab_tools()]
         )
         
-        state.messages.append(response.message)
+        state.messages.extend(messages)
 
         return state
     
