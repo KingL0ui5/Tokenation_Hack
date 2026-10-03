@@ -16,14 +16,19 @@ def add_reasoning():
             reasoning: The inference linking the two nodes.
         """
         s = store_as(LabState)
-        if task_name not in s.graphs:
+
+        if task_name not in s.task_graphs:
             raise ToolError(f"Task graph '{task_name}' does not exist.")
-        g = s.graphs[task_name]
+        
+        g = s.task_graphs[task_name]
+
         for nid in (source, target):
             if nid not in g.nodes:
                 raise ToolError(f"Unknown node '{nid}'.")
+            
         g.edges.append(Edge(source=source, target=target, reasoning=reasoning))
-        s.graphs[task_name] = g
+        s.task_graphs[task_name] = g
+        
         return f"Added edge {source} -> {target} to task '{task_name}'."
 
     return execute
@@ -40,13 +45,13 @@ def close_branch():
             reason: Why this branch cannot contain the optimum.
         """
         s = store_as(LabState)
-        if task_name not in s.graphs:
+        if task_name not in s.task_graphs:
             raise ToolError(f"Task graph '{task_name}' does not exist.")
-        g = s.graphs[task_name]
+        g = s.task_graphs[task_name]
         if node not in g.nodes:
             raise ToolError(f"Unknown node '{node}'.")
         closed = g.close(node, reason)
-        s.graphs[task_name] = g
+        s.task_graphs[task_name] = g
         return f"Closed: {', '.join(closed) or 'nothing (already closed)'} in task '{task_name}'."
 
     return execute
@@ -61,8 +66,8 @@ def view_graph():
             task_name: Name of the task graph to view
         """
         s = store_as(LabState)
-        if task_name not in s.graphs:
+        if task_name not in s.task_graphs:
             return f"Task graph '{task_name}' is empty."
-        return s.graphs[task_name].to_text()
+        return s.task_graphs[task_name].to_text()
 
     return execute

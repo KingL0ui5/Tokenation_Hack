@@ -7,25 +7,31 @@ from harness.types.state import LabState
 @solver
 def scientist_solver():
     async def solve(state: TaskState, generate: Generate) -> TaskState:
-        s = store_as(LabState)
+        lab_state = store_as(LabState)
         scientist_model = get_model()
         
-        graphs_summary = "\n\n".join(
-            f"Task: {task_name}\nGraph:\n{graph.to_text()}" 
-            for task_name, graph in s.graphs.items()
+        task_graphs_summary = "\n\n".join(
+            f"Task/Skill: {task_name}\nGraph:\n{graph.to_text()}" 
+            for task_name, graph in lab_state.task_graphs.items()
         )
-        
-        if not graphs_summary:
-            graphs_summary = "No tasks have been attempted yet."
 
+        if not task_graphs_summary:
+            task_graphs_summary = "No manipulation tasks have been attempted yet."
+
+        experiment_graph = lab_state.experiment_graph.to_text()
+        
         prompt = f"""
             You are the Strategic Planner Agent (Scientist).
             Your goal is to formulate the next experimental parameters or high-level tasks based on past outcomes.
             
-            Current known task graphs (falsified avenues and successes):
-            {graphs_summary}
+            OVERARCHING EXPERIMENT GRAPH:
+            {experiment_graph}
+            
+            INNER-LOOP MANIPULATION TASK GRAPHS:
+            {task_graphs_summary}
             
             Please propose the next task or experimental parameters to be executed by the technician.
+            You should update the overarching experiment graph to reflect your hypothesis and planning.
         """
         
         response = await scientist_model.generate([ChatMessage(role="user", content=prompt)])  # ty: ignore[call-non-callable]

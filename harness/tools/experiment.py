@@ -9,26 +9,35 @@ from harness.types.state import LabState, Edge, Node, ReasoningGraph
 
 
 def run(task_name: str, params: dict, parent: str = "root", reasoning: str = "") -> Node:
-    s = store_as(LabState)
-    if task_name not in s.graphs:
-        s.graphs[task_name] = ReasoningGraph()
+    lab_state = store_as(LabState)
+
+    if task_name not in lab_state.task_graphs:
+        lab_state.task_graphs[task_name] = ReasoningGraph()
         
-    env, g = get_env(s.env), s.graphs[task_name]
-    if parent not in g.nodes:
+    env, task_graphs = get_env(lab_state.env), lab_state.task_graphs[task_name]
+
+    if parent not in task_graphs.nodes:
         raise ToolError(f"Unknown parent node '{parent}'.")
-    if g.nodes[parent].closed:
+    
+    if task_graphs.nodes[parent].closed:
         raise ToolError(f"Branch '{parent}' is closed and cannot be extended.")
-    n = len(g.experiments)
-    if n >= s.budget:
+    
+    n_experiments = len(task_graphs.experiments)
+
+    if n_experiments >= lab_state.budget:
         raise ToolError("Experiment budget exhausted. Submit your answer.")
+    
     try:
         i = env.index(params)
+
     except ValueError as e:
         raise ToolError(str(e))
-    node = Node(id=f"E{n + 1}", params=env.condition(i), result=env.sample(i, np.random.default_rng([s.seed, n])))
-    g.nodes[node.id] = node
-    g.edges.append(Edge(source=parent, target=node.id, reasoning=reasoning))
-    s.graphs[task_name] = g
+    
+    node = Node(id=f"E{n_experiments + 1}", params=env.condition(i), result=env.sample(i, np.random.default_rng([lab_state.seed, n_experiments])))
+    task_graphs.nodes[node.id] = node
+    task_graphs.edges.append(Edge(source=parent, target=node.id, reasoning=reasoning))
+    lab_state.task_graphs[task_name] = task_graphs
+
     return node
 
 
@@ -45,9 +54,10 @@ def run_experiment():
         """
         node = run(task_name, params, parent, reasoning)
         s = store_as(LabState)
+
         return json.dumps(
             {"id": node.id, "params": node.params, "result": node.result,
-             "remaining_budget": s.budget - len(s.graphs[task_name].experiments)}
+             "remaining_budget": s.budget - len(s.task_graphs[task_name].experiments)}
         )
 
     return execute

@@ -84,5 +84,15 @@ class LabState(StoreModel):
     env: str = ""
     budget: int = 0
     seed: int = 0
-    graphs: dict[str, ReasoningGraph] = Field(default_factory=dict)
+    experiment_graph: ReasoningGraph = Field(default_factory=ReasoningGraph)
+    task_graphs: dict[str, ReasoningGraph] = Field(default_factory=dict)
     submission: dict[str, float] | None = None
+
+    @property
+    def task_graphs_summary(self) -> str:
+        """Serializes all task graphs into a string summary for the agent prompts."""
+        summary = "\n\n".join(
+            f"Task/Skill: {task_name}\nGraph:\n{graph.to_text()}" 
+            for task_name, graph in self.task_graphs.items()
+        )
+        return summary if summary else "No manipulation tasks have been attempted yet."

@@ -13,16 +13,17 @@ from harness.types.state import LabState
 
 def suggest(n: int = 1, xi: float = 0.01, avoid_closed: bool = True) -> list[dict]:
     """GP + expected improvement over all feasible, not-yet-run conditions."""
-    s = store_as(LabState)
-    env, exps = get_env(s.env), s.graph.experiments
+    lab_state = store_as(LabState)
+    env, exps = get_env(lab_state.env), lab_state.graph.experiments
     C = env.encode(env.X)
     run_idx = [env.index(e.params) for e in exps]
     mask = np.ones(len(C), bool)
     mask[run_idx] = False
 
     if len(exps) < 2:
-        rng = np.random.default_rng([s.seed, len(exps), 1])
+        rng = np.random.default_rng([lab_state.seed, len(exps), 1])
         pick = rng.choice(np.flatnonzero(mask), size=n, replace=False)
+        
         return [{"params": env.condition(i), "reason": "random initial design"} for i in pick]
 
     Xo = C[run_idx]

@@ -14,8 +14,9 @@ def technician_solver():
         
         graphs_summary = "\n\n".join(
             f"Task: {task_name}\nGraph:\n{graph.to_text()}" 
-            for task_name, graph in lab_state.graphs.items()
+            for task_name, graph in lab_state.task_graphs.items()
         )
+        
         if not graphs_summary:
             graphs_summary = "No task graphs have been created yet."
 

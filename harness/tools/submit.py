@@ -8,23 +8,31 @@ from harness.types.state import LabState
 
 
 def submit_params(task_name: str, params: dict, require_closed: bool = False) -> dict:
-    s = store_as(LabState)
-    env = get_env(s.env)
+    lab_state = store_as(LabState)
+    env = get_env(lab_state.env)
+
     try:
         cond = env.condition(env.index(params))
+
     except ValueError as e:
         raise ToolError(str(e))
+    
     if require_closed:
-        if task_name not in s.graphs:
+        if task_name not in lab_state.task_graphs:
+
             raise ToolError(f"Task graph '{task_name}' does not exist.")
-        g = s.graphs[task_name]
+        
+        g = lab_state.task_graphs[task_name]
         dangling = [n for n in g.open_leaves() if g.nodes[n].params != cond]
+
         if dangling:
+
             raise ToolError(
                 f"Unexplained open branches: {dangling}. Call close_branch on each with the reason "
                 "it was not continued, then submit again."
             )
-    s.submission = cond
+    lab_state.submission = cond
+
     return cond
 
 
@@ -37,6 +45,7 @@ def submit():
             task_name: Name of the task
             params: Value for every parameter.
         """
+
         return json.dumps(submit_params(task_name, params, require_closed=True))
 
     return execute
