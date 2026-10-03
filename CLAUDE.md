@@ -31,6 +31,18 @@ Run from `lab_sim/`:
 - Check placed meshes against their slots (position/seating), not just that IK converged.
 - Watch recorded videos before reporting. Keep reports short.
 
+## Gotchas
+
+- Scene is generated: edit `build_lab.py`, never the generated `lab.xml`. The EE site,
+  pipette mount, and welds are injected in `load_model()` via MjSpec, not by editing panda.xml.
+- Free joints (tubes, plate) shift qpos/qvel/ctrl indices. Never address the arm by `[:7]`;
+  use `jnt_qposadr`/`jnt_dofadr`/actuator ids. This bug broke every skill once.
+
+## Git
+
+- Branch from main. Commit/push only when asked; re-fetch before push.
+- I review the recorded video before any merge. Include the Co-Authored-By line.
+
 ## Current status
 
 - Pipette mounted on the hand; swapped to/from a stand via the visibility+collision toggle trick.
