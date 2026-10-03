@@ -205,6 +205,10 @@ class LabBackend:
         self.liquid_geom = {w: self.model.geom(f"liquid_well_{w}").id for w in self.wells}
         self._liquid_base = {w: self.model.geom_pos[g].copy() for w, g in self.liquid_geom.items()}
 
+        # Skills for the held-pipette motion path (IK targets the pipette nozzle, not the EE).
+        from lab_sim.robot.skills import PipetteSkills
+        self.skills = PipetteSkills(self.model, self.data, self.contract.obstacles, safe_z=0.22)
+
     # ================================================================ geometry
     def site_pos(self, name: str) -> np.ndarray:
         return self.data.site_xpos[self.model.site(name).id].copy()
@@ -326,9 +330,10 @@ class LabBackend:
         r = self.rng["command"]
         return max(0.0, volume * (1 + self.pipette_bias + r.normal(0, 0.01)) + r.normal(0, 0.15))
 
-    def _resolve_landing(self, container_id: str) -> str | None:
-        """Where liquid released over `container_id` really goes."""
-        tip = self.tip()[:2]
+    def _resolve_landing(self, container_id: str, tip_xy=None) -> str | None:
+        """Where liquid released over `container_id` really goes. `tip_xy` defaults to the
+        hand EE (old motion path); the skills-based pipette passes the pipette nozzle xy."""
+        tip = self.tip()[:2] if tip_xy is None else np.asarray(tip_xy)[:2]
         radius = self.vessels[self.actual[container_id].kind][0]
         if container_id.startswith("well_"):
             d = {f"well_{w}": float(np.linalg.norm(tip - self.actual_pos(f"well_{w}")[:2])) for w in self.wells}
@@ -336,27 +341,44 @@ class LabBackend:
             return near if d[near] <= radius else None
         return container_id if np.linalg.norm(tip - self.actual_pos(container_id)[:2]) <= radius else None
 
+    APPROACH_CLEAR = 0.04      # hover this far above an opening before descending
+    ENTER_DEPTH = 0.055        # slow vertical descent, nozzle enters the opening
+
     def pipette(self, source: str, dest: str, volume: float) -> dict:
-        """Fresh tip, aspirate from source, dispense over dest; repeats for >1 tip volume."""
-        actual_dest, delivered, events = dest, 0.0, []
-        self.clock_min += 5 / 60  # tip change
+        """Held-pipette path: aspirate from source, dispense over dest, via robot/skills.py
+        (IK targets the pipette nozzle). Repeats for >1 tip volume. Returns per-move tip
+        positions/errors in `moves` and liquid events in `events`; never raises."""
+        sk = self.skills
+        sk.set_active_point("nozzle")
+        actual_dest, delivered, events, moves = dest, 0.0, [], []
+        self.clock_min += 5 / 60   # tip change
         remaining = volume
         while remaining > 1e-9:
             chunk = min(remaining, TIP_CAPACITY_UL)
             remaining -= chunk
-            r = self.travel(self.believed_pos(source))
-            if not r["ok"]:
-                return {"ok": False, "reason": "source unreachable", "delivered_ul": delivered}
-            if self._resolve_landing(source) != source:
+
+            # --- aspirate from source ---
+            r = sk.travel_to(source, self.APPROACH_CLEAR); moves.append(("travel", source, r))
+            if not r.ok:
+                return {"ok": False, "reason": f"source: {r.reason}", "delivered_ul": delivered, "moves": moves}
+            r = sk.descend(self.ENTER_DEPTH); moves.append(("descend", source, r))
+            if not r.ok:
+                sk.ascend()
+                return {"ok": False, "reason": f"source descend: {r.reason}", "delivered_ul": delivered, "moves": moves}
+            if self._resolve_landing(source, sk.tip()[:2]) != source:
                 self.log("aspirate_miss", source=source)
-                return {"ok": False, "reason": f"tip not inside {source}", "delivered_ul": delivered}
+                sk.ascend()
+                return {"ok": False, "reason": f"tip not inside {source}", "delivered_ul": delivered, "moves": moves}
             taken = self.actual[source].remove(self._pipetting_error(chunk))
-            hover = PLATE_HOVER if dest.startswith("well_") and source.startswith("well_") else SAFE_Z
-            r = self.travel(self.believed_pos(dest), hover=hover)
-            if not r["ok"]:
-                self.log("spill", container=dest, volume_ul=round(sum(taken.values()), 2), reason="unreachable")
-                return {"ok": False, "reason": "destination unreachable", "delivered_ul": delivered}
-            landed = self._resolve_landing(dest)
+            moves.append(("ascend", source, sk.ascend()))
+
+            # --- dispense over dest ---
+            r = sk.travel_to(dest, self.APPROACH_CLEAR); moves.append(("travel", dest, r))
+            if not r.ok:
+                self.log("spill", container=dest, volume_ul=round(sum(taken.values()), 2), reason=r.reason)
+                return {"ok": False, "reason": f"dest: {r.reason}", "delivered_ul": delivered, "moves": moves}
+            r = sk.descend(self.ENTER_DEPTH); moves.append(("descend", dest, r))
+            landed = self._resolve_landing(dest, sk.tip()[:2]) if r.ok else None
             amount = sum(taken.values())
             if landed is None:
                 events.append(self.log("spill", container=dest, volume_ul=round(amount, 2)))
@@ -365,9 +387,10 @@ class LabBackend:
                     events.append(self.log("wrong_well", intended=dest, actual=landed, volume_ul=round(amount, 2)))
                 self.actual[landed].add(taken, amount, self.clock_min)
                 self._show_level(landed)
-                actual_dest = landed
-                delivered += amount
-        return {"ok": True, "actual_dest": actual_dest, "delivered_ul": delivered, "events": events}
+                actual_dest, delivered = landed, delivered + amount
+            moves.append(("ascend", dest, sk.ascend()))
+        return {"ok": True, "actual_dest": actual_dest, "delivered_ul": delivered,
+                "events": events, "moves": moves}
 
     # ================================================================ visuals
     def _show_level(self, container_id: str) -> None:

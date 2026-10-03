@@ -100,8 +100,18 @@ TIPBOX_POS = (0.30, 0.12)
 TIP_COLS = (-0.020, -0.012, -0.004, 0.004, 0.012, 0.020)
 TIP_ROWS = (-0.012, -0.004, 0.004, 0.012)
 
-PIPETTE_POS = (0.28, 0.30)         # standing in an open stand
-PIPETTE_TIP_Z = 0.008             # tip rests on the stand base plate
+PIPETTE_POS = (0.28, 0.30)         # the (now empty) pipette stand stays here as scenery
+
+# Pipette mounted rigidly on the hand (fixed child body -> part of the kinematic chain).
+# 180 deg about hand-x flips the authored +z (plunger) up toward the hand and sends the
+# nozzle down past the fingertips; the thin 17 mm side lies along the finger slide axis.
+PIPETTE_MOUNT_POS = (0.0, 0.0, 0.232)     # hand frame; tuned so the handle sits in the fingers
+PIPETTE_MOUNT_QUAT = (0.0, 1.0, 0.0, 0.0)  # 180 deg about hand-x
+PIPETTE_NOZZLE_Z = -0.008                  # authored nozzle (pipette min-z), body-local
+PIPETTE_TIP_END_Z = -0.058                 # ~50 mm below the nozzle (for a disposable tip)
+PIPETTE_SHAFT_FROMTO = (0, 0, 0.17, 0, 0, 0.022)   # capsule: body/shaft down to ~3 cm above tip
+PIPETTE_SHAFT_R = 0.006
+GRIP_HALF_M = 0.0085               # each finger at 8.5 mm -> ~17 mm opening across the handle
 
 GLASS = "0.90 0.95 1.00 0.25"
 
@@ -224,14 +234,11 @@ def build() -> str:
         f'    <site name="station_bench" pos="{px} {py} 0.03" size="0.004" rgba="0 1 0 0.5" group="4"/>\n'
         # open pipette stand: base plate + two flanking posts; the pipette rests vertically
         # between the posts with its tip on the base, so the whole pipette is visible.
+        # Empty pipette stand (scenery). The pipette itself is now mounted on the hand by
+        # load_model(), not placed here.
         f'    <geom name="pip_stand_base" type="box" size="0.022 0.028 0.004" pos="{ppx} {ppy} 0.004" rgba="0.45 0.45 0.50 1" contype="0" conaffinity="0"/>\n'
         f'    <geom name="pip_stand_post1" type="box" size="0.004 0.004 0.090" pos="{ppx} {ppy - 0.015:.4f} 0.0940" rgba="0.45 0.45 0.50 1" contype="0" conaffinity="0"/>\n'
         f'    <geom name="pip_stand_post2" type="box" size="0.004 0.004 0.090" pos="{ppx} {ppy + 0.015:.4f} 0.0940" rgba="0.45 0.45 0.50 1" contype="0" conaffinity="0"/>\n'
-        + "".join(mesh_visual(f"pipette_{p}", f"mesh_pip_{p}", "mat_pipette", ppx, ppy,
-                              PIPETTE_TIP_Z, M_PIPETTE["min_z"], M_PIPETTE["cx"], M_PIPETTE["cy"])
-                  for p in PIPETTE_PARTS)
-        + f'    <site name="pipette_grip" pos="{ppx} {ppy} 0.11" size="0.004" rgba="0 0 1 0.5" group="4"/>\n'
-        f'    <site name="pipette_tip" pos="{ppx} {ppy} {PIPETTE_TIP_Z:.4f}" size="0.003" rgba="0 0 1 0.5" group="4"/>\n'
     )
 
     # three segregated waste bins (aqueous / corrosive / solid)
@@ -339,7 +346,44 @@ def load_model() -> mujoco.MjModel:
     # Attach the arm (link0 subtree) into the bench; "" prefixes keep every name intact.
     frame = bench.worldbody.add_frame()
     frame.attach_body(panda.body("link0"), "", "")
-    return bench.compile()
+
+    _mount_pipette(bench)
+    model = bench.compile()
+    # close the fingers onto the handle in the home keyframe (rigid mount; grip is cosmetic).
+    # qpos[7:9] = the two finger slides; ctrl[7] = the gripper actuator (0..255 -> 0..0.04 m).
+    model.key_qpos[0][7] = model.key_qpos[0][8] = GRIP_HALF_M
+    model.key_ctrl[0][7] = GRIP_HALF_M / 0.04 * 255
+    return model
+
+
+def _mount_pipette(bench: mujoco.MjSpec) -> None:
+    """Mount the pipette as a fixed child of the hand: 8 visual parts + a shaft capsule
+    collider + the pipette_nozzle / pipette_tip_end sites, and close the fingers onto it."""
+    pip = bench.body("hand").add_body()
+    pip.name = "pipette"
+    pip.pos = list(PIPETTE_MOUNT_POS)
+    pip.quat = list(PIPETTE_MOUNT_QUAT)
+    for p in PIPETTE_PARTS:
+        g = pip.add_geom()
+        g.type = mujoco.mjtGeom.mjGEOM_MESH
+        g.meshname = f"mesh_pip_{p}"
+        g.material = "mat_pipette"
+        g.contype, g.conaffinity, g.group = 0, 0, 2
+    shaft = pip.add_geom()
+    shaft.name = "pipette_shaft"
+    shaft.type = mujoco.mjtGeom.mjGEOM_CAPSULE
+    shaft.fromto = list(PIPETTE_SHAFT_FROMTO)
+    shaft.size = [PIPETTE_SHAFT_R, 0, 0]
+    shaft.group = 3
+    shaft.rgba = [1, 0.5, 0, 0.0]              # invisible collider
+    for nm, z in (("pipette_nozzle", PIPETTE_NOZZLE_Z), ("pipette_tip_end", PIPETTE_TIP_END_Z)):
+        s = pip.add_site()
+        s.name, s.pos, s.size, s.group, s.rgba = nm, [0, 0, z], [0.004, 0, 0], 4, [0, 0, 1, 0.8]
+
+    # don't compute finger<->pipette contacts (siblings under hand)
+    for other in ("hand", "left_finger", "right_finger"):
+        ex = bench.add_exclude()
+        ex.bodyname1, ex.bodyname2 = "pipette", other
 
 
 @dataclass
@@ -357,6 +401,7 @@ class SceneContract:
     reagents: dict[str, str]              # reagent name -> source site ("enzyme" -> "reagent_enzyme")
     waste_bins: dict[str, dict]           # stream -> {"site": "waste_solid", "geom": "bin_solid"}
     stations: dict[str, str]              # name -> site (reader, incubator, bench, tip_box, ...)
+    tip_points: dict[str, str]            # active IK points on the held pipette: name -> site
     obstacles: list[str]                  # collidable geom names the arm must avoid (no robot/floor)
     vessels: dict[str, VesselSpec]        # "well" / "tube" -> dimensions
 
@@ -385,7 +430,9 @@ def scene_contract(model: mujoco.MjModel | None = None) -> SceneContract:
     reagents = {s[len("reagent_"):]: s for s in sites if s.startswith("reagent_")}
     waste_bins = {s[len("waste_"):]: {"site": s, "geom": "bin_" + s[len("waste_"):]}
                   for s in sites if s.startswith("waste_")}
-    classified = set(wells) | set(reagents.values()) | {v["site"] for v in waste_bins.values()}
+    tip_points = {s[len("pipette_"):]: s for s in ("pipette_nozzle", "pipette_tip_end") if s in sites}
+    classified = (set(wells) | set(reagents.values()) | {v["site"] for v in waste_bins.values()}
+                  | set(tip_points.values()))
     stations = {s: s for s in sites if s not in classified and s != EE_SITE["name"]}
 
     obstacles = []
@@ -401,7 +448,7 @@ def scene_contract(model: mujoco.MjModel | None = None) -> SceneContract:
     vessels = {"well": VesselSpec(WELL_R, WELL_H, cap(WELL_R, WELL_H)),
                "tube": VesselSpec(M_TUBE15["r"], M_TUBE15["open_z"], cap(M_TUBE15["r"], M_TUBE15["open_z"]))}
 
-    return SceneContract(wells, reagents, waste_bins, stations, obstacles, vessels)
+    return SceneContract(wells, reagents, waste_bins, stations, tip_points, obstacles, vessels)
 
 
 if __name__ == "__main__":

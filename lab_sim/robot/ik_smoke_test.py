@@ -34,7 +34,7 @@ TARGETS = {
         "reagent_dea", "reagent_tris", "reagent_glycine", "reagent_phosphate", "reagent_pnpp",
         "reagent_mgcl2", "reagent_zncl2", "reagent_nacl", "reagent_glycerol", "reagent_water",
         "reagent_naoh", "reagent_pnp_standard"],
-    "stations / tools": ["station_reader", "station_incubator", "tip_box", "pipette_grip"],
+    "stations / tools": ["station_reader", "station_incubator", "tip_box"],
     "cold block": ["reagent_enzyme"],
     "waste bins": ["waste_aqueous", "waste_corrosive", "waste_solid"],
     "human zone (expected out of reach)": ["human_zone"],
@@ -49,7 +49,7 @@ def main() -> int:
     model = load_model()
     data = mujoco.MjData(model)  # ty: ignore[unresolved-attribute]
 
-    ee = "attachment_site"
+    ee = "pipette_nozzle"   # the robot holds the pipette; reach is measured at the nozzle tip
     ee_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, ee)  # ty: ignore[unresolved-attribute]
 
     # Gripper-straight-down orientation = the EE orientation at the home keyframe.
@@ -99,6 +99,10 @@ def main() -> int:
     for group, slots in TARGETS.items():
         print(f"# {group}")
         for slot in slots:
+            if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, slot) < 0:  # ty: ignore[unresolved-attribute]
+                print(f"  {slot:18} {'MISSING SITE':>54}   FAIL")
+                n_fail += 1
+                continue
             # Target pose: slot position, gripper pointing down.
             configuration.update(home_q)
             posture_task.set_target(home_q)
