@@ -290,6 +290,7 @@ name = "bo-eval"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "daqp" },
     { name = "inspect-ai" },
     { name = "mink" },
     { name = "mujoco" },
@@ -314,6 +315,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "daqp" },
     { name = "inspect-ai" },
     { name = "mink" },
     { name = "mujoco" },
