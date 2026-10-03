@@ -23,6 +23,7 @@ Everything here is STATIC (no free joints), so the Panda's "home" keyframe still
 
 from __future__ import annotations
 
+import string
 from pathlib import Path
 
 import mujoco
@@ -38,11 +39,25 @@ LAB_XML = Path(__file__).with_name("lab.xml")
 EE_SITE = dict(name="attachment_site", pos=[0, 0, 0.1034],
                quat=[0.9238795, 0, 0, 0.3826834], group=4)
 
-# ---------------------------------------------------------------------------- plate
-ROWS, COLS = "ABCD", 6
-PLATE_CENTER = (0.50, 0.00)
+# --------------------------------------------------------------------------- plate(s)
+# Parametric: change these constants ALONE to switch plate configuration.
+#   default     : PLATE_ROWS=4,  PLATE_COLS=6,  WELL_PITCH=0.018, N_PLATES=1  (current)
+#   two 6x6     : PLATE_ROWS=6,  PLATE_COLS=6,  WELL_PITCH=0.018, N_PLATES=2
+#   one 96-well : PLATE_ROWS=8,  PLATE_COLS=12, WELL_PITCH=0.009, N_PLATES=1
+PLATE_ROWS, PLATE_COLS = 4, 6
 WELL_PITCH = 0.018
-WELL_R, WELL_H = 0.007, 0.012
+N_PLATES = 1
+PLATE_CENTER = (0.50, 0.00)
+WELL_H = 0.012
+WELL_R = WELL_PITCH * 0.38          # scales with pitch (6.8 mm at 18 mm, 3.4 mm at 9 mm)
+
+# ----------------------------------------------------------- waste / cold block / human
+# Three segregated waste bins (name suffix, rgba).
+WASTE_BINS = [("aqueous", "0.20 0.45 0.85 1"), ("corrosive", "0.85 0.35 0.20 1"),
+              ("solid", "0.45 0.45 0.45 1")]
+WASTE_ROW_Y, WASTE_X0, WASTE_DX = -0.47, 0.24, 0.12
+COLD_BLOCK_POS = (0.28, -0.24)     # chilled block beside the reagent racks, holds the enzyme
+HUMAN_ZONE_POS = (0.88, 0.00)      # marked hand-off patch at the far bench edge
 
 # ------------------------------------------------- AutoBio meshes (rel. to scenes/)
 AB = "../models/autobio"
@@ -111,6 +126,32 @@ def well(slot, x, y, z0, liquid_rgba) -> str:
     )
 
 
+def plate(prefix, cx, cy) -> str:
+    """One well plate (PLATE_ROWS x PLATE_COLS) centred at (cx, cy); wells named
+    <prefix>well_<row><col>. prefix is "" for a single plate, "p1_"/"p2_" for several."""
+    rows = string.ascii_uppercase[:PLATE_ROWS]
+    pw, pd, base_h = PLATE_COLS * WELL_PITCH + 0.01, PLATE_ROWS * WELL_PITCH + 0.01, 0.004
+    s = (f'    <geom name="{prefix}plate_base" type="box" size="{pw / 2:.4f} {pd / 2:.4f} {base_h / 2:.4f}" '
+         f'pos="{cx:.4f} {cy:.4f} {base_h / 2:.4f}" rgba="0.95 0.95 0.95 1"/>\n'
+         f'    <geom name="{prefix}plate_collision" type="box" size="{pw / 2:.4f} {pd / 2:.4f} {WELL_H / 2:.4f}" '
+         f'pos="{cx:.4f} {cy:.4f} {base_h + WELL_H / 2:.4f}" rgba="0 0 0 0" group="3"/>\n')
+    for i, r in enumerate(rows):
+        for j in range(PLATE_COLS):
+            x = cx + (i - (PLATE_ROWS - 1) / 2) * WELL_PITCH
+            y = cy + (j - (PLATE_COLS - 1) / 2) * WELL_PITCH
+            s += well(f"{prefix}well_{r}{j + 1}", x, y, base_h, "1 1 0.6 0.9")
+    return s
+
+
+def plate_layout() -> list[tuple[str, float, float]]:
+    """(prefix, cx, cy) for each plate. Single plate keeps the bare `well_` naming."""
+    cx0, cy0 = PLATE_CENTER
+    if N_PLATES == 1:
+        return [("", cx0, cy0)]
+    spacing = PLATE_COLS * WELL_PITCH + 0.03
+    return [(f"p{k + 1}_", cx0 + (k - (N_PLATES - 1) / 2) * spacing, cy0) for k in range(N_PLATES)]
+
+
 def reagent_tube(name, x, y, base_z, liquid_rgba) -> str:
     """15 mL stock tube: visual mesh (no collider) + liquid geom + opening site."""
     h = M_TUBE15["open_z"]
@@ -136,22 +177,10 @@ def reagent_rack(name, cx, cy) -> str:
 def build() -> str:
     parts: list[str] = []
     px, py = PLATE_CENTER
-    plate_w = COLS * WELL_PITCH + 0.01
-    plate_d = len(ROWS) * WELL_PITCH + 0.05
-    base_h = 0.004
 
-    # plate: thin base, invisible collision block over the wells, then wells
-    parts.append(
-        f'    <geom name="plate_base" type="box" size="{plate_w / 2:.4f} {plate_d / 2:.4f} {base_h / 2:.4f}" '
-        f'pos="{px} {py} {base_h / 2:.4f}" rgba="0.95 0.95 0.95 1"/>\n'
-        f'    <geom name="plate_collision" type="box" size="{plate_w / 2:.4f} {plate_d / 2:.4f} {WELL_H / 2:.4f}" '
-        f'pos="{px} {py} {base_h + WELL_H / 2:.4f}" rgba="0 0 0 0" group="3"/>\n'
-    )
-    for i, r in enumerate(ROWS):
-        for j in range(COLS):
-            x = px + (i - (len(ROWS) - 1) / 2) * WELL_PITCH
-            y = py + (j - (COLS - 1) / 2) * WELL_PITCH
-            parts.append(well(f"well_{r}{j + 1}", x, y, base_h, "1 1 0.6 0.9"))
+    # well plate(s) — parametric (rows/cols/pitch/count via constants above)
+    for prefix, cx, cy in plate_layout():
+        parts.append(plate(prefix, cx, cy))
 
     # reagent racks + stock tubes (replace the old reservoirs)
     parts.append(reagent_rack("rackA", *RACK_A))
@@ -200,8 +229,26 @@ def build() -> str:
                   for p in PIPETTE_PARTS)
         + f'    <site name="pipette_grip" pos="{ppx} {ppy} 0.11" size="0.004" rgba="0 0 1 0.5" group="4"/>\n'
         f'    <site name="pipette_tip" pos="{ppx} {ppy} {PIPETTE_TIP_Z:.4f}" size="0.003" rgba="0 0 1 0.5" group="4"/>\n'
-        '    <geom name="waste_bin" type="cylinder" size="0.05 0.05" pos="0.30 -0.45 0.05" rgba="0.2 0.2 0.2 1"/>\n'
-        '    <site name="waste" pos="0.30 -0.45 0.12" size="0.004" rgba="0 1 0 0.5" group="4"/>\n'
+    )
+
+    # three segregated waste bins (aqueous / corrosive / solid)
+    for k, (wname, rgba) in enumerate(WASTE_BINS):
+        wx = WASTE_X0 + k * WASTE_DX
+        parts.append(
+            f'    <geom name="bin_{wname}" type="cylinder" size="0.035 0.05" pos="{wx:.4f} {WASTE_ROW_Y} 0.05" rgba="{rgba}"/>\n'
+            f'    <site name="waste_{wname}" pos="{wx:.4f} {WASTE_ROW_Y} 0.12" size="0.004" rgba="0 1 0 0.5" group="4"/>\n'
+        )
+
+    # cold block (chilled) holding the enzyme tube
+    cbx, cby = COLD_BLOCK_POS
+    parts.append(f'    <geom name="cold_block" type="box" size="0.05 0.05 0.015" pos="{cbx} {cby} 0.015" rgba="0.55 0.80 0.90 1"/>\n')
+    parts.append(reagent_tube("enzyme", cbx, cby, 0.03, "0.85 0.90 0.80 0.7"))
+
+    # human hand-off zone, marked patch at the far bench edge (outside the robot workspace)
+    hzx, hzy = HUMAN_ZONE_POS
+    parts.append(
+        f'    <geom name="human_zone" type="box" size="0.06 0.08 0.001" pos="{hzx} {hzy} 0.001" rgba="0.95 0.85 0.10 1" contype="0" conaffinity="0"/>\n'
+        f'    <site name="human_zone" pos="{hzx} {hzy} 0.02" size="0.006" rgba="0 1 0 0.5" group="4"/>\n'
     )
 
     labware = "".join(parts)

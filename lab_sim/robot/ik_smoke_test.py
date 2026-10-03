@@ -34,8 +34,10 @@ TARGETS = {
         "reagent_dea", "reagent_tris", "reagent_glycine", "reagent_phosphate", "reagent_pnpp",
         "reagent_mgcl2", "reagent_zncl2", "reagent_nacl", "reagent_glycerol", "reagent_water",
         "reagent_naoh", "reagent_pnp_standard"],
-    "stations / tools / waste": ["station_reader", "station_incubator", "tip_box",
-                                  "pipette_grip", "waste"],
+    "stations / tools": ["station_reader", "station_incubator", "tip_box", "pipette_grip"],
+    "cold block": ["reagent_enzyme"],
+    "waste bins": ["waste_aqueous", "waste_corrosive", "waste_solid"],
+    "human zone (expected out of reach)": ["human_zone"],
 }
 
 
@@ -65,8 +67,9 @@ def main() -> int:
     robot_geoms = mink.get_subtree_geom_ids(model, mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "link0"))  # ty: ignore[unresolved-attribute]
     # Note: the pipette and the reagent tubes are grasp/aspirate *targets*, not fixed
     # obstacles, so they're excluded here (the reagent racks themselves are obstacles).
-    obstacles = ["bench", "plate_collision", "incubator", "plate_reader",
-                 "waste_bin", "collide_rackA", "collide_rackB", "collide_tipbox"]
+    obstacles = ["bench", "plate_collision", "incubator", "plate_reader", "cold_block",
+                 "bin_aqueous", "bin_corrosive", "bin_solid",
+                 "collide_rackA", "collide_rackB", "collide_tipbox"]
     obstacle_geoms = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, g) for g in obstacles]  # ty: ignore[unresolved-attribute]
     collision_limit = mink.CollisionAvoidanceLimit(
         model, geom_pairs=[(robot_geoms, obstacle_geoms)],
@@ -104,32 +107,42 @@ def main() -> int:
                 mink.SO3.from_matrix(down_R), tgt_xyz)
             frame_task.set_target(target)
 
-            # --- IK solve ---
+            # --- IK solve --- (mink raises if the QP is infeasible, e.g. an out-of-reach
+            # target with collision limits; treat that as "unreachable" and report it.)
+            infeasible = False
             for _ in range(IK_STEPS):
-                vel = mink.solve_ik(configuration, [frame_task, posture_task], IK_DT, SOLVER, limits=limits)
+                try:
+                    vel = mink.solve_ik(configuration, [frame_task, posture_task], IK_DT, SOLVER, limits=limits)
+                except AssertionError:
+                    infeasible = True
+                    break
                 configuration.integrate_inplace(vel, IK_DT)
                 err = frame_task.compute_error(configuration)
                 if np.linalg.norm(err[:3]) < POS_TOL and np.linalg.norm(err[3:]) < ORI_TOL:
                     break
             pos_err = np.linalg.norm(err[:3])
             ori_err = np.linalg.norm(err[3:])
-            ik_ok = pos_err < POS_TOL and ori_err < ORI_TOL
+            ik_ok = (not infeasible) and pos_err < POS_TOL and ori_err < ORI_TOL
 
-            # --- servo check: closed-loop, exactly as a primitive runs. Re-solve IK from the
-            # live sim state each step and command the position actuators, so steady-state
-            # gravity sag is corrected instead of being read as a failure. ---
-            data.qpos[:] = home_q
-            data.qvel[:] = 0
-            servo = mink.Configuration(model, data.qpos)
-            for _ in range(SERVO_STEPS):
-                servo.update(data.qpos)
-                vel = mink.solve_ik(servo, [frame_task, posture_task], IK_DT, SOLVER, limits=limits)
-                servo.integrate_inplace(vel, IK_DT)
-                data.ctrl[arm_act] = servo.q[:7]
-                mujoco.mj_step(model, data)  # ty: ignore[unresolved-attribute]
-            delta = site_xpos(model, data, ee) - (site_xpos(model, data, slot) + np.array([0, 0, STANDOFF]))
-            sag_h, sag_v = np.linalg.norm(delta[:2]), abs(delta[2])
-            collisions = robot_obstacle_contacts()
+            # --- servo check: closed-loop, exactly as a primitive runs (skipped if IK failed) ---
+            sag_h = sag_v = float("nan")
+            collisions = []
+            if ik_ok:
+                data.qpos[:] = home_q
+                data.qvel[:] = 0
+                servo = mink.Configuration(model, data.qpos)
+                for _ in range(SERVO_STEPS):
+                    servo.update(data.qpos)
+                    try:
+                        vel = mink.solve_ik(servo, [frame_task, posture_task], IK_DT, SOLVER, limits=limits)
+                    except AssertionError:
+                        break
+                    servo.integrate_inplace(vel, IK_DT)
+                    data.ctrl[arm_act] = servo.q[:7]
+                    mujoco.mj_step(model, data)  # ty: ignore[unresolved-attribute]
+                delta = site_xpos(model, data, ee) - (site_xpos(model, data, slot) + np.array([0, 0, STANDOFF]))
+                sag_h, sag_v = np.linalg.norm(delta[:2]), abs(delta[2])
+                collisions = robot_obstacle_contacts()
 
             reach = "OK" if (ik_ok and not collisions) else "FAIL"
             n_ok += reach == "OK"
