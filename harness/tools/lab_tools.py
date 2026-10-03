@@ -1,9 +1,10 @@
 """Lab tools: the agent's only interface to the simulated lab, driving Lok's lab_sim scene
-through `LabBackend`. The simulation models physical asset positions only (MuJoCo rigid-body
-physics) -- where the arm, pipette tip and containers are, and whether liquid lands where
-intended. It cannot model chemistry or sense anything, so manipulating assets with the arm
-(dispense, transfer_sample, mix) is the only thing possible; there is no inspection, camera,
-instrument or recovery tool here. Spill/collision handling is deferred to a later iteration.
+through `LabBackend`. Nothing in the scene has a free joint, so no container can be grasped
+or knocked over -- the only thing physically simulated is the held pipette's nozzle reaching
+named sites. There is no liquid, no volume and no instrument: a call reports only whether it
+succeeded, never a fabricated spill or reading, and never the robot/pipette's internal state
+(tilt, tracking error, joint positions) that caused a failure -- that diagnostic detail is
+recorded in the hidden ledger only, never returned to the agent.
 
 Usage:
     tools = lab_tools()            # one lab per Inspect sample, created on first use
@@ -19,76 +20,20 @@ from inspect_ai.tool import Tool, ToolError, tool
 from harness.tools.lab_backend import LabBackend, LedgerEntry, current_backend
 
 
-def _result(b: LabBackend, tool_name: str, args: dict, observation: dict, expected: dict | None = None,
-            discrepancies: list[str] | None = None, actual: dict | None = None, ok: bool = True) -> str:
-    res = {"ok": ok, "observation": observation}
-    if expected:
-        res["expected"] = expected
-    if discrepancies:
-        res["discrepancies"] = discrepancies
+def _result(b: LabBackend, tool_name: str, args: dict, ok: bool, reason: str | None = None) -> str:
+    res = {"ok": ok, "lab_time_min": round(b.clock_min, 2)}
+    # `reason` (tilt/tracking-error/IK diagnostics) is hidden lab truth, not agent-visible.
     b.ledger.append(LedgerEntry(round(b.clock_min, 3), tool_name, intended=args,
-                                actual=actual or {}, observed=res))
-    return json.dumps(res, default=str)
+                                observed={**res, "reason": reason} if reason else res))
+    return json.dumps(res)
 
 
-def _reject(b: LabBackend, tool_name: str, args: dict, message: str) -> None:
-    b.ledger.append(LedgerEntry(round(b.clock_min, 3), tool_name, intended=args, actual={},
-                                observed={"ok": False, "error": message}))
-    raise ToolError(message)
-
-
-def _container(b: LabBackend, name: str) -> str:
+def _site(b: LabBackend, name: str) -> str:
     """Accept "B3", "well_B3", "enzyme" or "reagent_enzyme" (reagents are the stock tubes)."""
     for candidate in (name, f"well_{name}", f"reagent_{name}"):
-        if candidate in b.actual:
+        if candidate in b.sites:
             return candidate
-    raise ToolError(f"unknown container {name!r}. Wells: {', '.join(b.wells)}; "
-                    f"reagents: {', '.join(b.reagents)}")
-
-
-def _check_volume(b: LabBackend, tool_name: str, args: dict, source: str, dest: str, volume: float) -> None:
-    if volume <= 0:
-        _reject(b, tool_name, args, "volume must be positive")
-    src, dst = b.nominal[source], b.nominal[dest]
-    if src.volume_ul + 1e-6 < volume:
-        _reject(b, tool_name, args, f"{source} holds {src.volume_ul:.1f} uL; requested {volume:.1f} uL")
-    if dst.volume_ul + volume > dst.capacity_ul + 1e-6:
-        _reject(b, tool_name, args, f"{dest} holds {dst.volume_ul:.1f} of {dst.capacity_ul:.0f} uL; "
-                f"requested {volume:.1f} uL")
-    if dest.startswith("well_") and dest not in b.wells_used and len(b.wells_used) >= b.budget["wells"]:
-        _reject(b, tool_name, args, f"well budget spent ({b.budget['wells']} wells)")
-
-
-def _move_liquid(b: LabBackend, tool_name: str, args: dict, source: str, dest: str, volume: float) -> str:
-    _check_volume(b, tool_name, args, source, dest, volume)
-    if source.startswith("reagent_"):
-        reagent = source[len("reagent_"):]
-        used = b.reagent_used_ul.get(reagent, 0.0)
-        cap = b.budget["reagent_ul"].get(reagent, float("inf"))
-        if used + volume > cap + 1e-6:
-            _reject(b, tool_name, args, f"{reagent} budget: {cap - used:.1f} uL left; requested {volume:.1f} uL")
-        b.reagent_used_ul[reagent] = used + volume
-    if dest.startswith("well_"):
-        b.wells_used.add(dest)
-
-    taken = b.nominal[source].remove(volume)          # the agent's bookkeeping: as commanded
-    b.nominal[dest].add(taken, volume, b.clock_min)
-    out = b.pipette(source, dest, volume)              # what physically happens
-    b.park()
-
-    discrepancies = []
-    for ev in out.get("events", []):
-        if ev["kind"] == "spill":
-            discrepancies.append(f"spill at {ev['container']}: liquid did not reach the container")
-        elif ev["kind"] == "wrong_well":
-            discrepancies.append(f"liquid landed in {ev['actual']} instead of {ev['intended']}")
-    if not out["ok"]:
-        discrepancies.append(out["reason"])
-    observation = {"nominal_contents": {dest: b.nominal[dest].summary()["composition"]},
-                   "lab_time_min": round(b.clock_min, 2)}
-    actual = {"dest": out.get("actual_dest"), "delivered_ul": round(out.get("delivered_ul", 0.0), 3)}
-    return _result(b, tool_name, args, observation, expected={"dest": dest, "volume_ul": volume},
-                   discrepancies=discrepancies, actual=actual, ok=out["ok"] and not discrepancies)
+    raise ToolError(f"unknown site {name!r}. Wells: {', '.join(b.wells)}; reagents: {', '.join(b.reagents)}")
 
 
 def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
@@ -100,70 +45,52 @@ def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
     @tool
     def dispense() -> Tool:
         async def execute(reagent: str, destination: str, volume_ul: float) -> str:
-            """Pipette a reagent from its stock tube into a well (fresh tip each call).
+            """Pipette a reagent from its stock tube into a well (intended volume only;
+            not tracked -- there is no way to sense how much liquid ends up anywhere).
 
             Args:
-                reagent: Reagent stock, one of the lab's reagents (see get_lab_state), e.g.
-                    "dea", "pnpp", "enzyme", "mgcl2", "nacl", "water", "naoh".
-                destination: Well ("B3").
-                volume_ul: Volume in microlitres.
+                reagent: One of the lab's reagents, e.g. "enzyme", "pnpp", "mgcl2", "water".
+                destination: Well, e.g. "B3".
+                volume_ul: Intended volume in microlitres.
             """
             b = B()
             args = {"reagent": reagent, "destination": destination, "volume_ul": volume_ul}
-            src = _container(b, reagent)
-            if not src.startswith("reagent_"):
+            src = _site(b, reagent)
+            if src not in b.contract.reagents.values():
                 raise ToolError(f"{reagent!r} is not a reagent; use transfer_sample to move liquid between containers")
-            return _move_liquid(b, "dispense", args, src, _container(b, destination), volume_ul)
+            r = b.pipette(src, _site(b, destination))
+            return _result(b, "dispense", args, r["ok"], r.get("reason"))
         return execute
 
     @tool
     def transfer_sample() -> Tool:
         async def execute(source: str, destination: str, volume_ul: float) -> str:
-            """Move liquid from one container to another (well, tube or reservoir; fresh tip).
+            """Move liquid from one container to another (intended volume only; not tracked).
 
             Args:
-                source: Container to take from, e.g. "rack_1" or "B3".
+                source: Container to take from, e.g. "B3".
                 destination: Container to add to.
-                volume_ul: Volume in microlitres.
+                volume_ul: Intended volume in microlitres.
             """
             b = B()
             args = {"source": source, "destination": destination, "volume_ul": volume_ul}
-            return _move_liquid(b, "transfer_sample", args, _container(b, source), _container(b, destination),
-                                volume_ul)
+            r = b.pipette(_site(b, source), _site(b, destination))
+            return _result(b, "transfer_sample", args, r["ok"], r.get("reason"))
         return execute
 
     @tool
     def mix() -> Tool:
         async def execute(container: str, cycles: int = 3) -> str:
-            """Mix a well or tube by pipetting up and down.
+            """Mix a container by pipetting up and down.
 
             Args:
-                container: Well ("B3") or tube ("rack_2").
+                container: Well or tube, e.g. "B3".
                 cycles: Up-down cycles.
             """
             b = B()
             args = {"container": container, "cycles": cycles}
-            cid = _container(b, container)
-            if b.nominal[cid].volume_ul <= 0:
-                _reject(b, "mix", args, f"{cid} is empty")
-            sk = b.skills
-            sk.set_active_point("nozzle")
-            r = sk.travel_to(cid, clearance=0.04)
-            if r.ok:
-                r = sk.descend(0.05)                         # nozzle into the liquid
-            for _ in range(max(1, cycles)):                  # pipette up and down
-                if not r.ok:
-                    break
-                sk.descend(-0.015)
-                r = sk.descend(0.015)
-            landed = b._resolve_landing(cid, sk.tip()[:2]) if r.ok else None
-            if landed == cid:
-                b.actual[cid].mixed = True
-            b.nominal[cid].mixed = True
-            sk.ascend()
-            disc = [] if landed == cid else [f"tip was not inside {cid}; liquid not mixed"]
-            return _result(b, "mix", args, {"lab_time_min": round(b.clock_min, 2)},
-                           discrepancies=disc, actual={"mixed": landed == cid}, ok=not disc)
+            r = b.mix(_site(b, container), cycles)
+            return _result(b, "mix", args, r["ok"], r.get("reason"))
         return execute
 
     return [dispense(), transfer_sample(), mix()]

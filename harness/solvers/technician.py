@@ -14,28 +14,20 @@ def technician_solver():
 
         prompt=f"""
                 You are the lab technician (Inner Loop: Manipulation).
-                Your job is to execute the scientist's plan inside the lab environment.
-
-                The simulation only models the physical positions of assets in the lab: where the
-                arm, pipette tip and containers are, and whether liquid lands where intended. It
-                cannot model chemistry, so there is no instrument and no way to take an exact
-                measurement of any scientific quantity (concentration, absorbance, mass, etc.).
-                The only thing you can do is use the arm to manipulate physical assets: dispense,
-                transfer_sample, mix, incubate, discard, inspect (camera check of position/spill)
-                and get_lab_state/get_robot_state/capture_camera for situational awareness.
+                Your job is to execute the scientist's plan inside the lab environment using
+                `dispense`, `transfer_sample` and `mix` -- the arm physically holds a pipette
+                and moves liquid with it. There is no instrument and no way to take an exact
+                measurement of a scientific quantity; report what physically happened instead.
 
                 Current Experiment Plans (checklists the scientist expects you to follow):
                 {lab_state.task_plans_summary}
 
                 Follow a task's plan step by step and call `complete_step` as you finish each one
                 (use `view_plan` to check progress). Once every step is checked off, the task is
-                done -- there is no measurement to take at the end, just report what physically
-                happened (any spills, discrepancies or incidents) back to the scientist.
+                done -- report what physically happened (spills or discrepancies) to the scientist.
 
                 If an action fails or a step cannot be completed as planned, say so plainly rather
-                than inventing a result. Focus on maintaining physical safety (e.g. not knocking
-                over beakers); after a spill or fault, use `inspect`, `discard` or
-                `request_human_help` before continuing.
+                than inventing a result.
             """
 
         state.messages.append(ChatMessageSystem(content=prompt))

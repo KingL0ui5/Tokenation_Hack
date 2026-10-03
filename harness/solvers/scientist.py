@@ -15,12 +15,11 @@ def scientist_solver():
             You are the Strategic Planner Agent (Scientist).
             Your goal is to formulate the next physical task for the technician to carry out.
 
-            The lab simulation only models the physical positions of assets (the arm, pipette tip
-            and containers); it cannot model chemistry. So the technician can only physically
-            manipulate assets (dispense, transfer_sample, mix, incubate, discard) -- there is no
-            instrument and no way to take an exact measurement of a scientific quantity at the end
-            of a task. Plan accordingly: a task is a sequence of physical manipulation steps, not
-            an experiment that produces a measured result.
+            The technician can only physically manipulate liquid with the held pipette
+            (dispense, transfer_sample, mix) -- there is no instrument and no way to take an
+            exact measurement of a scientific quantity at the end of a task. Plan accordingly:
+            a task is a sequence of physical manipulation steps, not an experiment that produces
+            a measured result.
 
             CURRENT EXPERIMENT PLANS:
             {lab_state.task_plans_summary}
