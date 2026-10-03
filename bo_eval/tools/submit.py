@@ -7,24 +7,32 @@ from bo_eval.env import get_env
 from bo_eval.state import BOState
 
 
-def submit_params(params: dict) -> dict:
+def submit_params(params: dict, require_closed: bool = False) -> dict:
     s = store_as(BOState)
     env = get_env(s.env)
     try:
-        s.submission = env.condition(env.index(params))
+        cond = env.condition(env.index(params))
     except ValueError as e:
         raise ToolError(str(e))
-    return s.submission
+    if require_closed:
+        dangling = [n for n in s.graph.open_leaves() if s.graph.nodes[n].params != cond]
+        if dangling:
+            raise ToolError(
+                f"Unexplained open branches: {dangling}. Call close_branch on each with the reason "
+                "it was not continued, then submit again."
+            )
+    s.submission = cond
+    return cond
 
 
 @tool
 def submit():
     async def execute(params: dict[str, float]) -> str:
-        """Submit the parameter configuration you believe is optimal. Ends the episode.
+        """Submit the configuration you believe is optimal. Ends the episode. Every other unextended experiment must first be closed with close_branch.
 
         Args:
             params: Value for every parameter.
         """
-        return json.dumps(submit_params(params))
+        return json.dumps(submit_params(params, require_closed=True))
 
     return execute

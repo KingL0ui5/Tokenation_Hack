@@ -15,7 +15,9 @@ from bo_eval.tools.submit import submit_params
 INSTRUCTIONS = """You are an autonomous experimentalist searching an experimental space for the optimal configuration.
 Every experiment is a node in a reasoning graph; link it to the node it follows from (its parent) with a short
 reasoning label. When the evidence shows a branch cannot contain the optimum, close it with close_branch;
-closed branches cannot be extended. Keep the number of experiments small. When confident, call submit()."""
+closed branches cannot be extended. Before submitting, every experiment you did not continue from must be
+closed with a reason explaining why it was not pursued. Keep the number of experiments small. When confident,
+call submit()."""
 
 
 @solver

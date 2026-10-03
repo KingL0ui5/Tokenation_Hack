@@ -30,6 +30,11 @@ class ReasoningGraph(BaseModel):
     def experiments(self) -> list[Node]:
         return [n for n in self.nodes.values() if n.params is not None]
 
+    def open_leaves(self) -> list[str]:
+        """Experiment nodes that were neither extended nor closed."""
+        sources = {e.source for e in self.edges}
+        return [n.id for n in self.experiments if not n.closed and n.id not in sources]
+
     def close(self, node_id: str, reason: str) -> list[str]:
         """Close a branch (Hintikka-style): the node and all its descendants."""
         closed, stack = [], [node_id]
