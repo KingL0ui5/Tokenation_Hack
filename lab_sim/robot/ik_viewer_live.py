@@ -16,9 +16,10 @@ import mujoco.viewer
 import numpy as np
 import mink
 
+from scenes.build_lab import load_model
+
 logging.disable(logging.WARNING)
 
-XML = "scenes/lab.xml"
 STANDOFF = 0.03
 STEPS_PER_TARGET = 240
 TOUR = ["pipette_grip", "reservoir_enzyme", "well_B3", "well_D1", "well_A6",
@@ -30,7 +31,7 @@ def site_xpos(model, data, name):
 
 
 def main() -> None:
-    model = mujoco.MjModel.from_xml_path(XML)
+    model = load_model()
     data = mujoco.MjData(model)
     ee = "attachment_site"
     ee_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, ee)
