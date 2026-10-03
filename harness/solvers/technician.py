@@ -11,12 +11,7 @@ from harness.tools.lab_tools import lab_tools
 def technician_solver():
     async def solve(state: TaskState, generate: Generate) -> TaskState:
         lab_state = store_as(LabState)
-        graphs_summary =lab_state.task_graphs_summary
         technician_model = get_model()
-    
-
-        if not graphs_summary:
-            graphs_summary = "No task graphs have been created yet."
 
         state.messages.append(ChatMessage(
             role="system", 
@@ -27,7 +22,7 @@ def technician_solver():
                 For each action/skill you perform (like 'pick_up_test_tube'), it will be tracked in a task-specific ReasoningGraph.
 
                 Current Task Graphs:
-                {graphs_summary}
+                {lab_state.task_graphs_summary}
 
                 If an action fails, use `add_reasoning` or `close_branch` to record WHY it failed in that task's graph, 
                 so you do not repeat the mistake. Focus on maintaining physical safety (e.g. not knocking over beakers).
