@@ -2,7 +2,30 @@
 name = "bo-eval"
 version = "0.1.0"
 requires-python = ">=3.10"
-dependencies = ["inspect_ai", "numpy", "pandas", "scipy", "scikit-learn"]
+dependencies = [
+    "inspect-ai",
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "pydantic",
+    "mujoco",
+    "mink",
+    "opencv-python",
+]
 
-[tool.setuptools]
-packages = ["bo_eval", "bo_eval.tools"]
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["bo_eval", "harness", "lab_sim"]
+
+[tool.uv]
+
+[tool.uv.sources]
