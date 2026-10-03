@@ -334,8 +334,11 @@ class PipetteSkills:
         coll = self.model.geom(f"collide_tube_{body[len('tubebody_'):]}").id if body.startswith("tubebody_") \
             else self.model.geom(f"{body}_collision").id
         gap = grip_gap if grip_gap is not None else max(0.004, 2 * self.model.geom_size[coll][0] - 0.004)
+        self._world_weld(body, False)                    # free it from its slot
+        mujoco.mj_forward(self.model, self.data)
         self.close_gripper(gap)
         if not self._both_pads_touch(coll):
+            self._world_weld(body, True)                 # grasp failed -> re-seat it in its slot
             return MoveResult(False, "both finger pads not in contact with the object",
                               self.tip().round(4).tolist())
         self._set_weld_relpose(self.welds[body], body)
