@@ -8,7 +8,7 @@ from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import ConstantKernel, Matern, WhiteKernel
 
 from bo_eval.env import get_env
-from harness.state import LabState
+from harness.types.state import LabState
 
 
 def suggest(n: int = 1, xi: float = 0.01, avoid_closed: bool = True) -> list[dict]:

@@ -2,7 +2,7 @@ from inspect_ai.solver import solver, TaskState, Generate
 from inspect_ai.model import get_model, ChatMessage
 from inspect_ai.util import store_as
 
-from harness.state import LabState
+from harness.types.state import LabState
 
 @solver
 def scientist_solver():
@@ -10,7 +10,6 @@ def scientist_solver():
         s = store_as(LabState)
         scientist_model = get_model()
         
-        # Serialize the graphs for each task to provide context to the scientist
         graphs_summary = "\n\n".join(
             f"Task: {task_name}\nGraph:\n{graph.to_text()}" 
             for task_name, graph in s.graphs.items()

@@ -3,7 +3,7 @@ from inspect_ai.solver import solver, TaskState, Generate
 from inspect_ai.util import store_as
 
 from .solvers import scientist_solver, technician_solver
-from .state import LabState
+from .types.state import LabState
 
 @solver
 def init_lab_state(budget: int = 30):

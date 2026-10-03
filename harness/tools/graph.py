@@ -1,7 +1,7 @@
 from inspect_ai.tool import ToolError, tool
 from inspect_ai.util import store_as
 
-from harness.state import LabState, Edge, ReasoningGraph
+from harness.types.state import LabState, Edge, ReasoningGraph
 
 
 @tool

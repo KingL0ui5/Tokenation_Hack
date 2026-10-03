@@ -5,7 +5,7 @@ from inspect_ai.tool import ToolError, tool
 from inspect_ai.util import store_as
 
 from bo_eval.env import get_env
-from harness.state import LabState, Edge, Node, ReasoningGraph
+from harness.types.state import LabState, Edge, Node, ReasoningGraph
 
 
 def run(task_name: str, params: dict, parent: str = "root", reasoning: str = "") -> Node:

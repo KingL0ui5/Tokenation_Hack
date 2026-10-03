@@ -4,7 +4,7 @@ from inspect_ai.tool import ToolError, tool
 from inspect_ai.util import store_as
 
 from bo_eval.env import get_env
-from harness.state import LabState
+from harness.types.state import LabState
 
 
 def submit_params(task_name: str, params: dict, require_closed: bool = False) -> dict:

@@ -2,7 +2,7 @@ from inspect_ai.solver import solver, TaskState, Generate
 from inspect_ai.model import get_model, ChatMessage
 from inspect_ai.util import store_as
 
-from harness.state import LabState
+from harness.types.state import LabState
 from harness.tools.experiment import run_experiment
 from harness.tools.graph import add_reasoning, close_branch, view_graph
 
@@ -23,7 +23,7 @@ def technician_solver():
             role="system", 
             content=f"""
                 You are the lab technician (Inner Loop: Manipulation).
-                Your job is to execute the scientist's plan using physical mechanics and trajectory vectors.
+                Your job is to execute the scientist's plan using physical mechanics and trajectory vectors inside the lab envioronment.
                 When you attempt an action, you must use the `run_experiment` tool.
                 For each action/skill you perform (like 'pick_up_test_tube'), it will be tracked in a task-specific ReasoningGraph.
 
