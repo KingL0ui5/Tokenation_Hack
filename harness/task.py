@@ -25,7 +25,7 @@ def autonomous_lab_task():
         plan_sequence.append(technician_solver())
 
     return Task(
-        dataset=[{"input": "Synthesize Compound X"}],
+        dataset=[{"input": "Synthesize Compound X"}],  # ty: ignore[invalid-argument-type]
         setup=init_lab_state(),
         plan=plan_sequence,
     )

@@ -26,7 +26,7 @@ def bo_scorer(tolerance: float = 0.0, graph_dir: str | None = "logs/graphs"):
             answer = pick(exps, key=lambda e: e.result).params
         best = env.true_value(env.optimum)
         regret = 1.0 if answer is None else abs(best - env.true_value(env.index(answer))) / abs(best)
-        hits = [e.id for e in exps if env.index(e.params) == env.optimum]
+        hits = [e.id for e in exps if env.index(e.params) == env.optimum]  # ty: ignore[invalid-argument-type]
 
         mermaid = g.to_mermaid()
         if graph_dir:

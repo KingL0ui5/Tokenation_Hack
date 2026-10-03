@@ -37,19 +37,19 @@ TARGETS = {
 
 
 def site_xpos(model, data, name):
-    return data.site_xpos[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, name)].copy()
+    return data.site_xpos[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, name)].copy()  # ty: ignore[unresolved-attribute]
 
 
 def main() -> int:
-    model = mujoco.MjModel.from_xml_path(XML)
-    data = mujoco.MjData(model)
+    model = mujoco.MjModel.from_xml_path(XML)  # ty: ignore[unresolved-attribute]
+    data = mujoco.MjData(model)  # ty: ignore[unresolved-attribute]
 
     ee = "attachment_site"
-    ee_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, ee)
+    ee_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, ee)  # ty: ignore[unresolved-attribute]
 
     # Gripper-straight-down orientation = the EE orientation at the home keyframe.
-    mujoco.mj_resetDataKeyframe(model, data, 0)
-    mujoco.mj_forward(model, data)
+    mujoco.mj_resetDataKeyframe(model, data, 0)  # ty: ignore[unresolved-attribute]
+    mujoco.mj_forward(model, data)  # ty: ignore[unresolved-attribute]
     down_R = data.site_xmat[ee_id].reshape(3, 3).copy()
     home_q = data.qpos.copy()
 
@@ -59,19 +59,19 @@ def main() -> int:
 
     # Collision avoidance: keep every robot geom off the fixed lab obstacles, so IK picks a
     # non-colliding arm config instead of the first kinematically-valid one.
-    robot_geoms = mink.get_subtree_geom_ids(model, mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "link0"))
+    robot_geoms = mink.get_subtree_geom_ids(model, mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "link0"))  # ty: ignore[unresolved-attribute]
     # Note: the pipette is a grasp *target*, not a fixed obstacle, so it's excluded here.
     obstacles = ["bench", "plate_collision", "incubator", "plate_reader", "tube_rack",
                  "pipette_holder", "waste_bin",
                  "collide_reservoir_buffer", "collide_reservoir_enzyme", "collide_reservoir_substrate",
                  "collide_reservoir_inhibitor", "collide_reservoir_stop"]
-    obstacle_geoms = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, g) for g in obstacles]
+    obstacle_geoms = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, g) for g in obstacles]  # ty: ignore[unresolved-attribute]
     collision_limit = mink.CollisionAvoidanceLimit(
         model, geom_pairs=[(robot_geoms, obstacle_geoms)],
         minimum_distance_from_collisions=0.005, collision_detection_distance=0.05)
     limits = [mink.ConfigurationLimit(model), collision_limit]
 
-    arm_act = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, f"actuator{i}") for i in range(1, 8)]
+    arm_act = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, f"actuator{i}") for i in range(1, 8)]  # ty: ignore[unresolved-attribute]
     robot_set, obstacle_set = set(robot_geoms), set(obstacle_geoms)
 
     def robot_obstacle_contacts():
@@ -81,7 +81,7 @@ def main() -> int:
             if data.contact[c].dist < -1e-4 and (
                     (g1 in robot_set and g2 in obstacle_set) or (g2 in robot_set and g1 in obstacle_set)):
                 other = g2 if g1 in robot_set else g1
-                hits.append(mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, other))
+                hits.append(mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, other))  # ty: ignore[unresolved-attribute]
         return hits
 
     # reach = IK converged AND no robot/obstacle penetration. Gravity sag (steady-state droop
@@ -124,7 +124,7 @@ def main() -> int:
                 vel = mink.solve_ik(servo, [frame_task, posture_task], IK_DT, SOLVER, limits=limits)
                 servo.integrate_inplace(vel, IK_DT)
                 data.ctrl[arm_act] = servo.q[:7]
-                mujoco.mj_step(model, data)
+                mujoco.mj_step(model, data)  # ty: ignore[unresolved-attribute]
             delta = site_xpos(model, data, ee) - (site_xpos(model, data, slot) + np.array([0, 0, STANDOFF]))
             sag_h, sag_v = np.linalg.norm(delta[:2]), abs(delta[2])
             collisions = robot_obstacle_contacts()

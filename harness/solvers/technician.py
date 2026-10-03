@@ -33,7 +33,7 @@ def technician_solver():
                 If an action fails, use `add_reasoning` or `close_branch` to record WHY it failed in that task's graph, 
                 so you do not repeat the mistake. Focus on maintaining physical safety (e.g. not knocking over beakers).
             """
-        ))
+        ))  # ty: ignore[call-non-callable]
         
         response = await technician_model.generate(
             state.messages,

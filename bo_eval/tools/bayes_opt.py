@@ -16,7 +16,7 @@ def suggest(n: int = 1, xi: float = 0.01, avoid_closed: bool = True) -> list[dic
     s = store_as(BOState)
     env, exps = get_env(s.env), s.graph.experiments
     C = env.encode(env.X)
-    run_idx = [env.index(e.params) for e in exps]
+    run_idx = [env.index(e.params) for e in exps]  # ty: ignore[invalid-argument-type]
     mask = np.ones(len(C), bool)
     mask[run_idx] = False
 

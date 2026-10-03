@@ -14,6 +14,7 @@ def scientist_solver():
             f"Task: {task_name}\nGraph:\n{graph.to_text()}" 
             for task_name, graph in s.graphs.items()
         )
+        
         if not graphs_summary:
             graphs_summary = "No tasks have been attempted yet."
 
@@ -27,8 +28,8 @@ def scientist_solver():
             Please propose the next task or experimental parameters to be executed by the technician.
         """
         
-        response = await scientist_model.generate([ChatMessage(role="user", content=prompt)])
-        state.messages.append(ChatMessage(role="assistant", content=response.completion))
+        response = await scientist_model.generate([ChatMessage(role="user", content=prompt)])  # ty: ignore[call-non-callable]
+        state.messages.append(ChatMessage(role="assistant", content=response.completion))  # ty: ignore[call-non-callable]
 
         return state
     
