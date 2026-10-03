@@ -23,8 +23,15 @@ import mink
 import mujoco
 import numpy as np
 
+from scenes.build_lab import PIPETTE_PARTS as _PIPETTE_PARTS
+
 ARM = 7
-_POINTS = {"nozzle": "pipette_nozzle", "tip_end": "pipette_tip_end"}
+
+
+def _has_site(model, name: str) -> bool:
+    return any(model.site(i).name == name for i in range(model.nsite))
+_POINTS = {"nozzle": "pipette_nozzle", "tip_end": "pipette_tip_end", "hand": "attachment_site"}
+GRIP_HALF_M = 0.00914     # finger half-opening that grips the pipette handle
 
 
 @dataclass
@@ -41,9 +48,22 @@ class PipetteSkills:
                  active: str = "pipette_nozzle"):
         self.model, self.data = model, data
         self.safe_z, self.max_tilt = safe_z, max_tilt_deg
+        # vertical reference orientation per targetable point, captured at the (home) pose
+        self._down_by_site = {s: data.site_xmat[model.site(s).id].reshape(3, 3).copy()
+                              for s in _POINTS.values() if _has_site(model, s)}
         self._set_site(active)
-        # vertical reference = the active site's orientation at the current (home) pose
-        self.down = data.site_xmat[self.site_id].reshape(3, 3).copy()
+        self.down = self._down_by_site[active]
+
+        # pipette-swap state: hand-mounted pipette (on body "pipette") vs the stand pipette
+        self.held = True
+        self._drop_qpos = None
+        self.gripper_act = model.actuator("actuator8").id
+        pid = model.body("pipette").id
+        self.mounted_shaft = model.geom("pipette_shaft").id
+        self.mounted_visual = [g for g in range(model.ngeom)
+                               if model.geom_bodyid[g] == pid and g != self.mounted_shaft]
+        self.stand_shaft = model.geom("stand_pipette_shaft").id
+        self.stand_visual = [model.geom(f"stand_pipette_{p}").id for p in _PIPETTE_PARTS]
         self.cfg = mink.Configuration(model)
         self.posture = mink.PostureTask(model, cost=1e-2)
         self.posture.set_target(data.qpos.copy())
@@ -59,6 +79,7 @@ class PipetteSkills:
     def _set_site(self, site: str) -> None:
         self.active = site
         self.site_id = self.model.site(site).id
+        self.down = self._down_by_site[site]
 
     def _make_task(self) -> None:
         self.frame_task = mink.FrameTask(self.active, "site", position_cost=1.0,
@@ -159,3 +180,79 @@ class PipetteSkills:
         target = np.array([tp[0], tp[1], self.safe_z])
         ok, r = self._goto(target, duration)
         return self._result(ok, r, target)
+
+    # --------------------------------------------------------------- gripper
+    def open_gripper(self) -> MoveResult:
+        self.data.ctrl[self.gripper_act] = 255.0                  # fully open
+        for _ in range(int(0.3 / self.model.opt.timestep)):
+            self._step()
+        return self._result(True, "gripper open")
+
+    def close_gripper(self, width: float = 2 * GRIP_HALF_M) -> MoveResult:
+        self.data.ctrl[self.gripper_act] = float(np.clip(width / 0.04 * 255, 0, 255))
+        for _ in range(int(0.3 / self.model.opt.timestep)):
+            self._step()
+        return self._result(True, f"gripper to {width * 1000:.0f} mm")
+
+    # --------------------------------------------------- pipette put-down / pick-up
+    def _show(self, visual_ids, shaft_id, visible: bool) -> None:
+        a = 1.0 if visible else 0.0
+        for g in visual_ids:
+            self.model.geom_rgba[g][3] = a
+        self.model.geom_contype[shaft_id] = 1 if visible else 0
+        self.model.geom_conaffinity[shaft_id] = 1 if visible else 0
+
+    def _copy_mounted_to_stand(self) -> None:
+        """Place the stand pipette exactly where the held pipette is now (seamless swap)."""
+        def copy(src, dst):
+            self.model.geom_pos[dst] = self.data.geom_xpos[src].copy()
+            q = np.zeros(4); mujoco.mju_mat2Quat(q, self.data.geom_xmat[src]); self.model.geom_quat[dst] = q
+        for s, d in zip(self.mounted_visual, self.stand_visual):
+            copy(s, d)
+        copy(self.mounted_shaft, self.stand_shaft)
+        mujoco.mj_forward(self.model, self.data)
+
+    def _goto_qpos(self, q, duration: float = 0.5) -> None:
+        dt = self.model.opt.timestep
+        q0 = self.data.ctrl[:ARM].copy()
+        n = max(1, int(duration / dt))
+        for k in range(n):
+            s = (k + 1) / n
+            self.data.ctrl[:ARM] = q0 + (3 * s**2 - 2 * s**3) * (q[:ARM] - q0)
+            self._step()
+        for k in range(int(0.5 / dt)):
+            self._step()
+            if k * dt > 0.05 and np.abs(self.data.qvel[:ARM]).max() < 2e-3:
+                break
+
+    def put_down_pipette(self) -> MoveResult:
+        """Lower the held pipette into the stand, swap to the stand pipette, free the gripper."""
+        self.set_active_point("nozzle")
+        r = self.travel_to("pipette_stand", clearance=0.03)
+        if r.ok:
+            r = self.descend(0.03)
+        if not r.ok:
+            return r
+        self._drop_qpos = self.data.qpos.copy()
+        self._copy_mounted_to_stand()
+        self._show(self.mounted_visual, self.mounted_shaft, False)
+        self._show(self.stand_visual, self.stand_shaft, True)
+        self.open_gripper()
+        self.held = False
+        self.set_active_point("hand")           # gripper free -> IK targets attachment_site
+        self.ascend()
+        return self._result(True, "pipette placed in stand")
+
+    def pick_up_pipette(self) -> MoveResult:
+        """Return to the stand, swap back to the held pipette, close the gripper on it."""
+        if self._drop_qpos is None:
+            return MoveResult(False, "no pipette in the stand", self.tip().round(4).tolist())
+        self.set_active_point("hand")           # approach empty-handed
+        self._goto_qpos(self._drop_qpos)        # re-dock to the exact drop pose (seamless)
+        self._show(self.stand_visual, self.stand_shaft, False)
+        self._show(self.mounted_visual, self.mounted_shaft, True)
+        self.close_gripper()
+        self.held = True
+        self.set_active_point("nozzle")         # IK targets the nozzle while held
+        self.ascend()
+        return self._result(True, "pipette picked up")

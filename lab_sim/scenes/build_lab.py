@@ -263,6 +263,21 @@ def build() -> str:
         f'    <site name="human_zone" pos="{hzx} {hzy} 0.02" size="0.006" rgba="0 1 0 0.5" group="4"/>\n'
     )
 
+    # Stand pipette: a second, upright pipette in the stand, HIDDEN at start (alpha 0, no
+    # collision). put_down_pipette()/pick_up_pipette() swap visibility+collision between this
+    # and the hand-mounted pipette. Its pose is overwritten to match the held pipette on put-down.
+    cx = M_PIPETTE["cx"]
+    sz = 0.048                                   # upright default: nozzle ~z=0.04 in the stand
+    for p in PIPETTE_PARTS:
+        parts.append(f'    <geom name="stand_pipette_{p}" type="mesh" mesh="mesh_pip_{p}" '
+                     f'rgba="0.85 0.85 0.88 0" contype="0" conaffinity="0" group="2" '
+                     f'pos="{ppx - cx:.4f} {ppy:.4f} {sz:.4f}"/>\n')
+    parts.append(
+        f'    <geom name="stand_pipette_shaft" type="capsule" fromto="{ppx} {ppy} {sz + 0.022:.4f} {ppx} {ppy} {sz + 0.17:.4f}" '
+        f'size="0.006" group="3" rgba="1 0.5 0 0" contype="0" conaffinity="0"/>\n'
+        f'    <site name="pipette_stand" pos="{ppx} {ppy} 0.04" size="0.004" rgba="0 0 1 0.5" group="4"/>\n'
+    )
+
     labware = "".join(parts)
     pipette_meshes = "\n    ".join(
         f'<mesh name="mesh_pip_{p}" file="{AB}/tool/pipette/{p}_visual.obj" scale="0.1 0.1 0.1"/>'
@@ -369,7 +384,7 @@ def _mount_pipette(bench: mujoco.MjSpec) -> None:
         g = pip.add_geom()
         g.type = mujoco.mjtGeom.mjGEOM_MESH
         g.meshname = f"mesh_pip_{p}"
-        g.material = "mat_pipette"
+        g.rgba = [0.85, 0.85, 0.88, 1]        # rgba (not material) so skills can hide it
         g.contype, g.conaffinity, g.group = 0, 0, 2
     shaft = pip.add_geom()
     shaft.name = "pipette_shaft"
