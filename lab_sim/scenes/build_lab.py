@@ -23,7 +23,10 @@ Everything here is STATIC (no free joints), so the Panda's "home" keyframe still
 
 from __future__ import annotations
 
+import math
+import re
 import string
+from dataclasses import dataclass
 from pathlib import Path
 
 import mujoco
@@ -337,6 +340,68 @@ def load_model() -> mujoco.MjModel:
     frame = bench.worldbody.add_frame()
     frame.attach_body(panda.body("link0"), "", "")
     return bench.compile()
+
+
+@dataclass
+class VesselSpec:
+    radius_m: float
+    height_m: float
+    capacity_ul: float
+
+
+@dataclass
+class SceneContract:
+    """What the scene publishes to the tool layer, derived from the compiled model + the
+    geometry constants above (not duplicated). See scene_contract()."""
+    wells: list[str]                      # well site names ("well_A1" or "p1_well_A1")
+    reagents: dict[str, str]              # reagent name -> source site ("enzyme" -> "reagent_enzyme")
+    waste_bins: dict[str, dict]           # stream -> {"site": "waste_solid", "geom": "bin_solid"}
+    stations: dict[str, str]              # name -> site (reader, incubator, bench, tip_box, ...)
+    obstacles: list[str]                  # collidable geom names the arm must avoid (no robot/floor)
+    vessels: dict[str, VesselSpec]        # "well" / "tube" -> dimensions
+
+    def liquid_geom(self, container_site: str) -> str:
+        """Scene convention: the visual liquid geom for a container site."""
+        if container_site.startswith("reagent_"):
+            return "liquid_reagent_" + container_site[len("reagent_"):]
+        return "liquid_" + container_site       # well_B3 -> liquid_well_B3
+
+
+_ROBOT_BODIES = {"link0", "link1", "link2", "link3", "link4", "link5", "link6", "link7",
+                 "hand", "left_finger", "right_finger"}
+
+
+def scene_contract(model: mujoco.MjModel | None = None) -> SceneContract:
+    """Publish the scene's contract, derived from what build() actually emits.
+
+    Everything is read from the compiled model (site/geom names, collidability) and the
+    geometry constants, so it can never drift from the scene the robot loads.
+    """
+    m = model or load_model()
+    sites = [m.site(i).name for i in range(m.nsite)]
+
+    wells = sorted((s for s in sites if s.startswith("well_") or re.match(r"p\d+_well_", s)),
+                   key=lambda s: (s.split("well_")[0], s.split("well_")[1][0], int(s.split("well_")[1][1:])))
+    reagents = {s[len("reagent_"):]: s for s in sites if s.startswith("reagent_")}
+    waste_bins = {s[len("waste_"):]: {"site": s, "geom": "bin_" + s[len("waste_"):]}
+                  for s in sites if s.startswith("waste_")}
+    classified = set(wells) | set(reagents.values()) | {v["site"] for v in waste_bins.values()}
+    stations = {s: s for s in sites if s not in classified and s != EE_SITE["name"]}
+
+    obstacles = []
+    for g in range(m.ngeom):
+        name = m.geom(g).name
+        if (m.geom_contype[g] == 0 or not name or name == "floor"
+                or m.body(m.geom_bodyid[g]).name in _ROBOT_BODIES):
+            continue
+        obstacles.append(name)
+
+    def cap(r, h):
+        return math.pi * r * r * h * 1e9      # m^3 -> uL
+    vessels = {"well": VesselSpec(WELL_R, WELL_H, cap(WELL_R, WELL_H)),
+               "tube": VesselSpec(M_TUBE15["r"], M_TUBE15["open_z"], cap(M_TUBE15["r"], M_TUBE15["open_z"]))}
+
+    return SceneContract(wells, reagents, waste_bins, stations, obstacles, vessels)
 
 
 if __name__ == "__main__":

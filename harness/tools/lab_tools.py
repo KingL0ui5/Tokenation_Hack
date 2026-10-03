@@ -47,11 +47,11 @@ def _reject(b: LabBackend, tool_name: str, args: dict, message: str) -> None:
 
 
 def _container(b: LabBackend, name: str) -> str:
-    """Accept "B3", "well_B3", "rack_2", "enzyme" or "reservoir_enzyme"."""
-    for candidate in (name, f"well_{name}", f"reservoir_{name}"):
+    """Accept "B3", "well_B3", "enzyme" or "reagent_enzyme" (reagents are the stock tubes)."""
+    for candidate in (name, f"well_{name}", f"reagent_{name}"):
         if candidate in b.actual:
             return candidate
-    raise ToolError(f"unknown container {name!r}. Wells: {', '.join(b.wells)}; tubes: rack_1..rack_4; "
+    raise ToolError(f"unknown container {name!r}. Wells: {', '.join(b.wells)}; "
                     f"reagents: {', '.join(b.reagents)}")
 
 
@@ -78,8 +78,8 @@ def _check_volume(b: LabBackend, tool_name: str, args: dict, source: str, dest: 
 def _move_liquid(b: LabBackend, tool_name: str, args: dict, source: str, dest: str, volume: float) -> str:
     _check_unblocked(b, tool_name, args)
     _check_volume(b, tool_name, args, source, dest, volume)
-    if source.startswith("reservoir_"):
-        reagent = source[len("reservoir_"):]
+    if source.startswith("reagent_"):
+        reagent = source[len("reagent_"):]
         used = b.reagent_used_ul.get(reagent, 0.0)
         cap = b.budget["reagent_ul"].get(reagent, float("inf"))
         if used + volume > cap + 1e-6:
@@ -118,11 +118,12 @@ def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
     @tool
     def dispense() -> Tool:
         async def execute(reagent: str, destination: str, volume_ul: float) -> str:
-            """Pipette a reagent from its reservoir into a well or tube (fresh tip each call).
+            """Pipette a reagent from its stock tube into a well (fresh tip each call).
 
             Args:
-                reagent: Reagent reservoir, e.g. "buffer", "enzyme", "substrate", "inhibitor", "stop".
-                destination: Well ("B3") or tube ("rack_2").
+                reagent: Reagent stock, one of the lab's reagents (see get_lab_state), e.g.
+                    "dea", "pnpp", "enzyme", "mgcl2", "nacl", "water", "naoh".
+                destination: Well ("B3").
                 volume_ul: Volume in microlitres.
 
             Returns:
@@ -131,7 +132,7 @@ def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
             b = B()
             args = {"reagent": reagent, "destination": destination, "volume_ul": volume_ul}
             src = _container(b, reagent)
-            if not src.startswith("reservoir_"):
+            if not src.startswith("reagent_"):
                 raise ToolError(f"{reagent!r} is not a reagent; use transfer_sample to move liquid between containers")
             return _move_liquid(b, "dispense", args, src, _container(b, destination), volume_ul)
         return execute
@@ -323,23 +324,26 @@ def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
 
     @tool
     def discard() -> Tool:
-        async def execute(container: str) -> str:
-            """Empty a well or tube into the waste bin and clear its incidents. The well still
+        async def execute(container: str, bin: str = "aqueous") -> str:
+            """Empty a well into a segregated waste bin and clear its incidents. The well still
             counts against the budget.
 
             Args:
-                container: Well ("B3") or tube ("rack_2").
+                container: Well ("B3").
+                bin: Waste stream — "aqueous", "corrosive" or "solid".
 
             Returns:
                 ToolResult JSON.
             """
             b = B()
             cid = _container(b, container)
-            args = {"container": container}
-            if cid.startswith("reservoir_"):
-                _reject(b, "discard", args, "reagent reservoirs cannot be discarded")
+            args = {"container": container, "bin": bin}
+            if cid.startswith("reagent_"):
+                _reject(b, "discard", args, "reagent stock tubes cannot be discarded")
+            if bin not in b.contract.waste_bins:
+                _reject(b, "discard", args, f"bin must be one of {list(b.contract.waste_bins)}")
             b.travel(b.believed_pos(cid))
-            b.travel(b.site_pos("waste"))
+            b.travel(b.site_pos(b.contract.waste_bins[bin]["site"]))
             b.park()
             lost = b.actual[cid].volume_ul
             for store in (b.actual, b.nominal):
@@ -354,8 +358,8 @@ def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
     @tool
     def check_pipette() -> Tool:
         async def execute(volume_ul: float = 100.0) -> str:
-            """Dispense buffer onto the balance and report its mass (1 mg per uL). Reveals
-            pipetting bias. Uses buffer.
+            """Dispense water onto the balance and report its mass (1 mg per uL). Reveals
+            pipetting bias.
 
             Args:
                 volume_ul: Volume to dispense.
@@ -367,7 +371,7 @@ def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
             args = {"volume_ul": volume_ul}
             if not 1 <= volume_ul <= 1000:
                 _reject(b, "check_pipette", args, "volume must be between 1 and 1000 uL")
-            source = "reservoir_buffer" if "reservoir_buffer" in b.actual else f"reservoir_{b.reagents[0]}"
+            source = "reagent_water" if "reagent_water" in b.actual else f"reagent_{b.reagents[0]}"
             if b.nominal[source].volume_ul < volume_ul:
                 _reject(b, "check_pipette", args, f"{source} holds {b.nominal[source].volume_ul:.1f} uL")
             b.travel(b.believed_pos(source))
