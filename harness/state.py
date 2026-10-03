@@ -84,6 +84,5 @@ class LabState(StoreModel):
     env: str = ""
     budget: int = 0
     seed: int = 0
-    # Dictionary mapping task/skill names (e.g., "pick_up_test_tube") to their respective reasoning graphs
     graphs: dict[str, ReasoningGraph] = Field(default_factory=dict)
     submission: dict[str, float] | None = None
