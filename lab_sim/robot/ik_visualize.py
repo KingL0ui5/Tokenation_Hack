@@ -18,9 +18,10 @@ import mujoco
 import numpy as np
 import mink
 
+from scenes.build_lab import load_model
+
 logging.disable(logging.WARNING)
 
-XML = "scenes/lab.xml"
 OUT = "experiments/ik_tour.mp4"
 CAM = "front"
 W, H, FPS = 960, 720, 30
@@ -38,7 +39,7 @@ def site_xpos(model, data, name):
 
 
 def main() -> int:
-    model = mujoco.MjModel.from_xml_path(XML)
+    model = load_model()
     data = mujoco.MjData(model)
     ee = "attachment_site"
     ee_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, ee)

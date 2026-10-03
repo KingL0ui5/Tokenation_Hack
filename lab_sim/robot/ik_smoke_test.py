@@ -16,9 +16,10 @@ import mujoco
 import numpy as np
 import mink
 
+from scenes.build_lab import load_model
+
 logging.disable(logging.WARNING)  # mink warns that the finger joints sit at their limit; harmless
 
-XML = "scenes/lab.xml"
 SOLVER = "daqp"
 POS_TOL = 2e-3          # 2 mm
 ORI_TOL = np.deg2rad(2)  # 2 deg
@@ -41,7 +42,7 @@ def site_xpos(model, data, name):
 
 
 def main() -> int:
-    model = mujoco.MjModel.from_xml_path(XML)
+    model = load_model()
     data = mujoco.MjData(model)
 
     ee = "attachment_site"
