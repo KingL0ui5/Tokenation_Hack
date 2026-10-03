@@ -209,6 +209,10 @@
                     <geom mesh="link7_c" class="collision"/>
                     <body name="hand" pos="0 0 0.107" quat="0.9238795 0 0 -0.3826834">
                       <inertial mass="0.73" pos="-0.01 0 0.03" diaginertia="0.001 0.0025 0.0017"/>
+                      <!-- End-effector frame for IK: grasp midpoint between the fingertips.
+                           +45deg z-quat cancels the hand's -45deg mount so site axes align with link7.
+                           The site's +z points along the grasp/approach direction (out of the fingers). -->
+                      <site name="attachment_site" pos="0 0 0.1034" quat="0.9238795 0 0 0.3826834" size="0.005" rgba="1 0.5 0 0.6" group="4"/>
                       <geom mesh="hand_0" material="off_white" class="visual"/>
                       <geom mesh="hand_1" material="black" class="visual"/>
                       <geom mesh="hand_2" material="black" class="visual"/>

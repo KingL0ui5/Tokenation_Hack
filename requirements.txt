@@ -1,0 +1,8 @@
+# Python 3.12, conda env "autonomous-lab"
+mujoco==3.14.0
+numpy
+mink
+daqp        # QP solver backend for mink
+pytest
+pillow          # saving camera snapshots
+opencv-python   # rendering IK demo videos (robot/ik_visualize.py)
