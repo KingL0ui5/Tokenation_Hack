@@ -8,6 +8,7 @@ class Node(BaseModel):
     id: str
     params: dict[str, float] | None = None
     result: float | None = None
+    valid: bool = True
     closed: bool = False
     closed_reason: str | None = None
 
@@ -51,7 +52,8 @@ class ReasoningGraph(BaseModel):
         if n.params is None:
             return "root"
         p = ", ".join(f"{k}={v:g}" for k, v in n.params.items())
-        return f"{n.id} [{p}] -> {n.result:.4g}" + (" (CLOSED)" if n.closed else "")
+        tag = (" (CLOSED)" if n.closed else "") + ("" if n.valid else " (INVALID: plan incomplete)")
+        return f"{n.id} [{p}] -> {n.result:.4g}" + tag
 
     def to_text(self) -> str:
         lines = [self._label(n) for n in self.nodes.values()]
@@ -71,7 +73,8 @@ class ReasoningGraph(BaseModel):
                 lines.append(f'  {n.id}(("start"))')
             else:
                 p = "<br/>".join(f"{k}={v:g}" for k, v in n.params.items())
-                lines.append(f'  {n.id}["{n.id}<br/>{p}<br/><b>{n.result:.4g}</b>"]')
+                tag = "" if n.valid else "<br/><i>INVALID</i>"
+                lines.append(f'  {n.id}["{n.id}<br/>{p}<br/><b>{n.result:.4g}</b>{tag}"]')
         lines += [f'  {e.source} -->|"{q(e.reasoning)}"| {e.target}' for e in self.edges]
         closed = [n.id for n in self.nodes.values() if n.closed]
         if closed:
@@ -80,12 +83,35 @@ class ReasoningGraph(BaseModel):
         return "\n".join(lines)
 
 
+class Plan(BaseModel):
+    """A technician checklist written by the scientist for a task. take_measurement only
+    returns a trustworthy result for that task once every step here is checked off."""
+    steps: list[str] = Field(default_factory=list)
+    completed: list[bool] = Field(default_factory=list)
+
+    @property
+    def finished(self) -> bool:
+        return bool(self.steps) and all(self.completed)
+
+    @property
+    def remaining(self) -> list[str]:
+        return [s for s, done in zip(self.steps, self.completed) if not done]
+
+    def to_text(self) -> str:
+        checklist = "\n".join(
+            f"  [{'x' if done else ' '}] {i + 1}. {step}"
+            for i, (step, done) in enumerate(zip(self.steps, self.completed))
+        )
+        return f"({'FINISHED' if self.finished else 'INCOMPLETE'})\n{checklist}"
+
+
 class LabState(StoreModel):
     env: str = ""
     budget: int = 0
     seed: int = 0
     experiment_graph: ReasoningGraph = Field(default_factory=ReasoningGraph)
     task_graphs: dict[str, ReasoningGraph] = Field(default_factory=dict)
+    task_plans: dict[str, Plan] = Field(default_factory=dict)
     submission: dict[str, float] | None = None
 
     @property
@@ -96,3 +122,12 @@ class LabState(StoreModel):
             for task_name, graph in self.task_graphs.items()
         )
         return summary if summary else "No manipulation tasks have been attempted yet."
+
+    @property
+    def task_plans_summary(self) -> str:
+        """Serializes all task plans into a string summary for the agent prompts."""
+        summary = "\n\n".join(
+            f"Task/Skill: {task_name}\nPlan {plan.to_text()}"
+            for task_name, plan in self.task_plans.items()
+        )
+        return summary if summary else "No experiment plans have been created yet."

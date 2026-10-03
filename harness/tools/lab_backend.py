@@ -1,6 +1,6 @@
-"""Backend for the lab tools: drives Lok's lab_sim scene and tracks liquid.
-
-Follows `lab_sim/virtual-lab-plan.md`:
+"""Backend for the lab tools: drives Lok's lab_sim scene and tracks liquid positions only
+(no chemistry, no instrument -- the simulation models physical asset positions and nothing
+else). Follows `lab_sim/virtual-lab-plan.md`:
 
 - Layer 0-1 (scene + motion): the scene comes from `lab_sim.scenes.build_lab.load_model()`,
   unchanged. Motion is mink IK on `attachment_site` with collision avoidance (as in
@@ -13,11 +13,8 @@ Follows `lab_sim/virtual-lab-plan.md`:
 - Where liquid goes: decided by the tip's real position at dispense. Inside the target
   -> target; inside a neighbouring well -> the neighbour; otherwise a spill.
 - Truth ledger (plan's `LedgerEntry`): intended / actual / observed for every tool call.
-- Measurement: an `Assay` gives the noise-free signal of a container; an instrument model
-  (gain, offset, drift, noise, clipping) turns it into a reading. `PlaceholderAssay` is a
-  stand-in until Layer 2 (Lok/Anabel's world model) exists; pass your own via `assay=`.
 
-The agent never sees `actual`, the ledger, the assay parameters or the seeds.
+The agent never sees `actual`, the ledger or the seeds.
 """
 
 from __future__ import annotations
@@ -25,7 +22,6 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import asdict, dataclass, field
-from typing import Protocol
 
 import mink
 import mujoco
@@ -46,10 +42,6 @@ LAB_SECONDS_PER_MOVE = 1.5
 VESSELS = {"well": (0.007, 0.012), "tube": (0.006, 0.040), "reservoir": (0.025, 0.050)}
 RESERVOIR_START_UL = 20_000.0
 
-READER_SPEC = {"wavelength_nm": 405, "range_AU": [0.0, 2.0], "cv": 0.03,
-               "note": "plate reader: 3% CV, range 0-2.0 AU"}
-STANDARDS_AU = {"blank": 0.0, "low": 0.5, "high": 1.5}
-
 
 def _capacity_ul(kind: str) -> float:
     r, h = VESSELS[kind]
@@ -65,9 +57,6 @@ class Container:
     composition: dict[str, float] = field(default_factory=dict)  # source reagent -> uL
     slot: str = ""                  # scene site name
     mixed: bool = True
-    temperature_c: float = 25.0
-    reaction_start_min: float | None = None   # first time enzyme met substrate
-    stopped_min: float | None = None          # first time stop solution was added
 
     def add(self, composition: dict[str, float], volume: float, t_min: float) -> None:
         if volume <= 0:
@@ -77,11 +66,6 @@ class Container:
             self.composition[k] = self.composition.get(k, 0.0) + volume * v / total
         self.volume_ul += volume
         self.mixed = self.volume_ul == volume  # adding to existing liquid leaves it unmixed
-        if self.reaction_start_min is None and self.composition.get("enzyme", 0) > 0 \
-                and self.composition.get("substrate", 0) > 0:
-            self.reaction_start_min = t_min
-        if self.stopped_min is None and self.composition.get("stop", 0) > 0:
-            self.stopped_min = t_min
 
     def remove(self, volume: float) -> dict[str, float]:
         volume = min(volume, self.volume_ul)
@@ -103,46 +87,6 @@ class Container:
         return d
 
 
-class Assay(Protocol):
-    """Hidden ground truth: noise-free absorbance of a container at lab time t."""
-
-    def true_signal(self, c: Container, t_min: float) -> float: ...
-
-
-class PlaceholderAssay:
-    """Stand-in world model (Layer 2 is Lok/Anabel's). Michaelis-Menten with inhibition,
-    as in the plan: v = Vmax [S]/(Km + [S]) / (1 + [I]/Ki), product read by Beer-Lambert.
-    Reaction runs from when enzyme meets substrate until stop solution is added."""
-
-    STOCK_MM = {"substrate": 10.0, "inhibitor": 1.0}   # stock concentrations
-    ENZYME_UG_PER_UL = 0.005
-
-    def __init__(self, rng: np.random.Generator):
-        self.vmax = float(rng.uniform(20, 60))        # uM/min per ug/mL enzyme
-        self.km = float(rng.uniform(0.3, 2.0))        # mM
-        self.ki = float(rng.uniform(0.02, 0.2))       # mM
-        self.epsilon = 18.5                           # mM^-1 cm^-1 (p-nitrophenolate)
-
-    def true_signal(self, c: Container, t_min: float) -> float:
-        if c.volume_ul <= 0:
-            return 0.0
-        vol = c.volume_ul
-        s = self.STOCK_MM["substrate"] * c.composition.get("substrate", 0) / vol
-        i = self.STOCK_MM["inhibitor"] * c.composition.get("inhibitor", 0) / vol
-        enz = self.ENZYME_UG_PER_UL * c.composition.get("enzyme", 0) / vol * 1000  # ug/mL
-        product_mm = 0.0
-        if c.reaction_start_min is not None:
-            end = t_min if c.stopped_min is None else min(t_min, c.stopped_min)
-            minutes = max(0.0, end - c.reaction_start_min)
-            rate_mm = self.vmax * enz * s / (self.km + s) / (1 + i / self.ki) / 1000
-            if not c.mixed:
-                rate_mm *= 0.5
-            product_mm = min(s, rate_mm * minutes)
-        r = VESSELS[c.kind][0] * 100                  # cm
-        path_cm = (vol / 1000) / (math.pi * r * r)    # liquid height
-        return self.epsilon * product_mm * path_cm + 0.002 * vol / 1000
-
-
 @dataclass
 class LedgerEntry:
     t_lab: float
@@ -156,16 +100,15 @@ class LedgerEntry:
 class LabBackend:
     """One simulated lab session. Create one per sample."""
 
-    def __init__(self, seed: int = 0, assay: Assay | None = None, budget_wells: int = 24,
+    def __init__(self, seed: int = 0, budget_wells: int = 24,
                  reagent_budget_ul: dict[str, float] | None = None,
                  plate_offset_mm: tuple[float, float] = (0.0, 0.0),
-                 pipette_bias: float | None = None, reader_drift_per_min: float = 0.0):
+                 pipette_bias: float | None = None):
         logging.getLogger("mink").setLevel(logging.ERROR)
         from lab_sim.scenes.build_lab import load_model  # Lok's scene loader
 
-        streams = np.random.SeedSequence(seed).spawn(5)
-        self.rng = {k: np.random.default_rng(s) for k, s in
-                    zip(["reset", "command", "process", "measure", "report"], streams)}
+        streams = np.random.SeedSequence(seed).spawn(2)
+        self.rng = {k: np.random.default_rng(s) for k, s in zip(["reset", "command"], streams)}
         self.model = load_model()
         self.data = mujoco.MjData(self.model)
         mujoco.mj_resetDataKeyframe(self.model, self.data, 0)
@@ -195,11 +138,8 @@ class LabBackend:
                         for k, v in self.actual.items()}
         self.reagents = [k[len("reservoir_"):] for k, v in self.actual.items() if v.kind == "reservoir"]
 
-        self.assay = assay or PlaceholderAssay(self.rng["reset"])
         r = self.rng["reset"]
         self.pipette_bias = float(r.normal(0, 0.01)) if pipette_bias is None else pipette_bias
-        self.reader = {"gain": float(r.normal(1.0, 0.03)), "offset": float(r.normal(0.0, 0.01)),
-                       "drift_per_min": reader_drift_per_min}
         self.budget = {"wells": budget_wells,
                        "reagent_ul": dict(reagent_budget_ul or {k: RESERVOIR_START_UL for k in self.reagents})}
         self.wells_used: set[str] = set()
@@ -208,8 +148,7 @@ class LabBackend:
         self.clock_min = 0.0
         self.events: list[dict] = []
         self.ledger: list[LedgerEntry] = []
-        self.incidents: list[dict] = []        # unresolved spills / faults block experimental steps
-        self.blocked_attempts = 0
+        self.incidents: list[dict] = []        # spills/collisions logged for later use; not yet acted on
         self.liquid_geom = {w: self.model.geom(f"liquid_well_{w}").id for w in self.wells}
         self._liquid_base = {w: self.model.geom_pos[g].copy() for w, g in self.liquid_geom.items()}
 
@@ -226,10 +165,6 @@ class LabBackend:
         if container_id.startswith("well_"):
             return self._believed[container_id[5:]].copy()
         return self.site_pos(container_id)
-
-    @property
-    def cameras(self) -> list[str]:
-        return [self.model.camera(i).name for i in range(self.model.ncam)]
 
     # ================================================================== motion
     def _init_ik(self) -> None:
@@ -388,40 +323,6 @@ class LabBackend:
         g = self.liquid_geom[w]
         self.model.geom_size[g][1] = half
         self.model.geom_pos[g][2] = self._liquid_base[w][2] + half
-
-    def show_colour(self, well: str, absorbance: float) -> None:
-        a = float(np.clip(absorbance / 1.5, 0, 1))
-        self.model.geom_rgba[self.liquid_geom[well]] = [1.0, 1.0, 1.0 - 0.85 * a, 0.9]
-
-    def render_png(self, camera: str = "front", width: int = 640, height: int = 480) -> bytes:
-        import io
-
-        from PIL import Image
-
-        with mujoco.Renderer(self.model, height, width) as r:
-            r.update_scene(self.data, camera=camera)
-            img = r.render()
-        buf = io.BytesIO()
-        Image.fromarray(img).save(buf, format="PNG")
-        return buf.getvalue()
-
-    # ============================================================ measurement
-    def read(self, true_value: float) -> dict:
-        r, ins = self.rng["measure"], self.reader
-        y = (ins["gain"] * true_value + ins["offset"] + ins["drift_per_min"] * self.clock_min
-             + r.normal(0, READER_SPEC["cv"] * max(true_value, 0.05)))
-        if r.random() < 0.01:  # rare outlier
-            y *= r.uniform(1.3, 1.8)
-        lo, hi = READER_SPEC["range_AU"]
-        flag = "at_max_range" if y >= hi else None
-        return {"value": round(float(np.clip(y, lo, hi)), 4), "flag": flag}
-
-    def robot_state(self) -> dict:
-        return {"joint_positions_rad": self.data.qpos[:ARM_JOINTS].round(4).tolist(),
-                "joint_torques_Nm": self.data.actuator_force[:ARM_JOINTS].round(3).tolist(),
-                "tip_position_m": self.tip().round(4).tolist(),
-                "finger_gap_m": round(float(self.data.qpos[7] + self.data.qpos[8]), 4),
-                "lab_time_min": round(self.clock_min, 2)}
 
 
 # Per-sample backends, so tools can be created without passing a backend (e.g. in a

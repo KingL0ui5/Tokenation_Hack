@@ -1,10 +1,9 @@
 from inspect_ai.solver import solver, TaskState, Generate
-from inspect_ai.model import get_model, ChatMessage
+from inspect_ai.model import get_model, ChatMessageSystem
 from inspect_ai.util import store_as
 
 from harness.types.state import LabState
-from harness.tools.measurement import take_measurement
-from harness.tools.graph import add_reasoning, close_branch, view_graph
+from harness.tools.plan import complete_step, view_plan
 from harness.tools.lab_tools import lab_tools
 
 @solver
@@ -15,25 +14,35 @@ def technician_solver():
 
         prompt=f"""
                 You are the lab technician (Inner Loop: Manipulation).
-                Your job is to execute the scientist's plan using physical mechanics and trajectory vectors inside the lab envioronment.
-                Use `run_experiment` for tracked experiments and the lab tools for physical lab actions.
-                For each action/skill you perform (like 'pick_up_test_tube'), it will be tracked in a task-specific ReasoningGraph.
+                Your job is to execute the scientist's plan inside the lab environment.
 
-                Current Task Graphs:
-                {lab_state.task_graphs_summary}
+                The simulation only models the physical positions of assets in the lab: where the
+                arm, pipette tip and containers are, and whether liquid lands where intended. It
+                cannot model chemistry, so there is no instrument and no way to take an exact
+                measurement of any scientific quantity (concentration, absorbance, mass, etc.).
+                The only thing you can do is use the arm to manipulate physical assets: dispense,
+                transfer_sample, mix, incubate, discard, inspect (camera check of position/spill)
+                and get_lab_state/get_robot_state/capture_camera for situational awareness.
 
-                If an action fails, use `add_reasoning` or `close_branch` to record WHY it failed in that task's graph, 
-                so you do not repeat the mistake. Focus on maintaining physical safety (e.g. not knocking over beakers).
+                Current Experiment Plans (checklists the scientist expects you to follow):
+                {lab_state.task_plans_summary}
+
+                Follow a task's plan step by step and call `complete_step` as you finish each one
+                (use `view_plan` to check progress). Once every step is checked off, the task is
+                done -- there is no measurement to take at the end, just report what physically
+                happened (any spills, discrepancies or incidents) back to the scientist.
+
+                If an action fails or a step cannot be completed as planned, say so plainly rather
+                than inventing a result. Focus on maintaining physical safety (e.g. not knocking
+                over beakers); after a spill or fault, use `inspect`, `discard` or
+                `request_human_help` before continuing.
             """
 
-        state.messages.append(ChatMessage(
-            role="system", 
-            content=prompt
-        ))  # ty: ignore[call-non-callable]
+        state.messages.append(ChatMessageSystem(content=prompt))
         
         messages, _ = await technician_model.generate_loop(
             state.messages,
-            tools=[take_measurement(), add_reasoning(), close_branch(), view_graph(), *lab_tools()]
+            tools=[complete_step(), view_plan(), *lab_tools()]
         )
         
         state.messages.extend(messages)
