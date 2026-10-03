@@ -32,21 +32,25 @@ See [What is not done](#what-is-not-done) before relying on it.
 
 ## Quick start
 
-Requires Python 3.11. Runs natively on macOS (Apple Silicon tested) and Linux.
+Python 3.10+ (tested on 3.11). Runs natively on macOS (Apple Silicon tested) and Linux.
+The repo uses [uv](https://docs.astral.sh/uv/) (`pyproject.toml` + `uv.lock`):
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+uv sync
+uv pip install pillow    # camera images; not yet in pyproject.toml
 
 # End-to-end check with a scripted mock model (no API key, ~20 s)
-.venv/bin/python scripts/mock_run.py
+uv run python scripts/mock_run.py
 
 # Real run against a model (needs ANTHROPIC_API_KEY in the environment or .env)
-.venv/bin/inspect eval harness/task.py --model anthropic/claude-opus-5-5 --sample-id nominal-1
+uv run inspect eval harness/task.py --model anthropic/claude-opus-5-5 --sample-id nominal-1
 
 # Browse logs, including camera images the agent captured
-.venv/bin/inspect view
+uv run inspect view
 ```
+
+Without uv: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt pandas`, then
+use `.venv/bin/python` / `.venv/bin/inspect` in place of `uv run`.
 
 Using the lab directly from Python, without Inspect:
 
@@ -82,8 +86,9 @@ harness/
     ├── analysis.py       Rates, outlier rule, Z′, GP surrogate, UCB, mutual information
     └── hazards.json      Interlock hazard table (PLACEHOLDER, unverified)
 scripts/mock_run.py       Scripted end-to-end test through Inspect
-requirements.txt
 ```
+
+The robot model comes from `lab_sim/models/franka_emika_panda/` (shared with Lok's `lab_sim/`).
 
 Layering:
 
@@ -110,7 +115,7 @@ chemistry model never sees robot motion except through the volumes that arrived.
 File: [`lab/sim.py`](lab/sim.py). Class `LabWorld`.
 
 **Scene.** Built in code with `mujoco.MjSpec` on top of the Franka Emika Panda model in
-`models/franka_emika_panda/` (MuJoCo Menagerie). Added in code:
+`lab_sim/models/franka_emika_panda/` (MuJoCo Menagerie). Added in code:
 
 | Element | Details |
 | --- | --- |

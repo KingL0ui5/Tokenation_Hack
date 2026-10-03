@@ -20,7 +20,7 @@ import numpy as np
 
 from . import config as C
 
-PANDA_SCENE = Path(__file__).resolve().parents[2] / "models" / "franka_emika_panda" / "scene.xml"
+PANDA_SCENE = Path(__file__).resolve().parents[2] / "lab_sim" / "models" / "franka_emika_panda" / "scene.xml"
 PIPETTE_LENGTH = 0.20
 ARM_JOINTS = 7
 DOWN = np.array([0.0, 0.0, -1.0])

@@ -8,8 +8,6 @@ A405 kinetically, then computes rates, yields, outliers and the validity gate.
 
 from __future__ import annotations
 
-import copy
-import itertools
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
