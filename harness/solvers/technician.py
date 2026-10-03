@@ -3,7 +3,7 @@ from inspect_ai.model import get_model, ChatMessage
 from inspect_ai.util import store_as
 
 from harness.types.state import LabState
-from harness.tools.experiment import run_experiment
+from harness.tools.measurement import take_measurement
 from harness.tools.graph import add_reasoning, close_branch, view_graph
 from harness.tools.lab_tools import lab_tools
 
@@ -13,9 +13,7 @@ def technician_solver():
         lab_state = store_as(LabState)
         technician_model = get_model()
 
-        state.messages.append(ChatMessage(
-            role="system", 
-            content=f"""
+        prompt=f"""
                 You are the lab technician (Inner Loop: Manipulation).
                 Your job is to execute the scientist's plan using physical mechanics and trajectory vectors inside the lab envioronment.
                 Use `run_experiment` for tracked experiments and the lab tools for physical lab actions.
@@ -27,11 +25,15 @@ def technician_solver():
                 If an action fails, use `add_reasoning` or `close_branch` to record WHY it failed in that task's graph, 
                 so you do not repeat the mistake. Focus on maintaining physical safety (e.g. not knocking over beakers).
             """
+
+        state.messages.append(ChatMessage(
+            role="system", 
+            content=prompt
         ))  # ty: ignore[call-non-callable]
         
         messages, _ = await technician_model.generate_loop(
             state.messages,
-            tools=[run_experiment(), add_reasoning(), close_branch(), view_graph(), *lab_tools()]
+            tools=[take_measurement(), add_reasoning(), close_branch(), view_graph(), *lab_tools()]
         )
         
         state.messages.extend(messages)

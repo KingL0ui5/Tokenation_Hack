@@ -42,7 +42,7 @@ def run(task_name: str, params: dict, parent: str = "root", reasoning: str = "")
 
 
 @tool
-def run_experiment():
+def take_measurement():
     async def execute(task_name: str, params: dict[str, float], parent: str = "root", reasoning: str = "") -> str:
         """Run one experiment for a specific task and add it to the reasoning graph.
 
@@ -53,11 +53,11 @@ def run_experiment():
             reasoning: Why this experiment follows from the parent node.
         """
         node = run(task_name, params, parent, reasoning)
-        s = store_as(LabState)
+        lab_state = store_as(LabState)
 
         return json.dumps(
             {"id": node.id, "params": node.params, "result": node.result,
-             "remaining_budget": s.budget - len(s.task_graphs[task_name].experiments)}
+             "remaining_budget": lab_state.budget - len(lab_state.task_graphs[task_name].experiments)}
         )
 
     return execute
