@@ -19,3 +19,8 @@ MUJOCO_LOG.TXT
 
 # Local scratch notes
 notes.md
+# Diagnostic renders
+lab_sim/experiments/*.png
+
+# uv/pyenv python pin (local)
+.python-version

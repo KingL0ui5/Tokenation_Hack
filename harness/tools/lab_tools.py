@@ -38,11 +38,11 @@ def _reject(b: LabBackend, tool_name: str, args: dict, message: str) -> None:
 
 
 def _container(b: LabBackend, name: str) -> str:
-    """Accept "B3", "well_B3", "rack_2", "enzyme" or "reservoir_enzyme"."""
-    for candidate in (name, f"well_{name}", f"reservoir_{name}"):
+    """Accept "B3", "well_B3", "enzyme" or "reagent_enzyme" (reagents are the stock tubes)."""
+    for candidate in (name, f"well_{name}", f"reagent_{name}"):
         if candidate in b.actual:
             return candidate
-    raise ToolError(f"unknown container {name!r}. Wells: {', '.join(b.wells)}; tubes: rack_1..rack_4; "
+    raise ToolError(f"unknown container {name!r}. Wells: {', '.join(b.wells)}; "
                     f"reagents: {', '.join(b.reagents)}")
 
 
@@ -61,8 +61,8 @@ def _check_volume(b: LabBackend, tool_name: str, args: dict, source: str, dest: 
 
 def _move_liquid(b: LabBackend, tool_name: str, args: dict, source: str, dest: str, volume: float) -> str:
     _check_volume(b, tool_name, args, source, dest, volume)
-    if source.startswith("reservoir_"):
-        reagent = source[len("reservoir_"):]
+    if source.startswith("reagent_"):
+        reagent = source[len("reagent_"):]
         used = b.reagent_used_ul.get(reagent, 0.0)
         cap = b.budget["reagent_ul"].get(reagent, float("inf"))
         if used + volume > cap + 1e-6:
@@ -100,17 +100,18 @@ def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
     @tool
     def dispense() -> Tool:
         async def execute(reagent: str, destination: str, volume_ul: float) -> str:
-            """Pipette a reagent from its reservoir into a well or tube (fresh tip each call).
+            """Pipette a reagent from its stock tube into a well (fresh tip each call).
 
             Args:
-                reagent: Reagent reservoir, e.g. "buffer", "enzyme", "substrate", "inhibitor", "stop".
-                destination: Well ("B3") or tube ("rack_2").
+                reagent: Reagent stock, one of the lab's reagents (see get_lab_state), e.g.
+                    "dea", "pnpp", "enzyme", "mgcl2", "nacl", "water", "naoh".
+                destination: Well ("B3").
                 volume_ul: Volume in microlitres.
             """
             b = B()
             args = {"reagent": reagent, "destination": destination, "volume_ul": volume_ul}
             src = _container(b, reagent)
-            if not src.startswith("reservoir_"):
+            if not src.startswith("reagent_"):
                 raise ToolError(f"{reagent!r} is not a reagent; use transfer_sample to move liquid between containers")
             return _move_liquid(b, "dispense", args, src, _container(b, destination), volume_ul)
         return execute
@@ -145,17 +146,21 @@ def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
             cid = _container(b, container)
             if b.nominal[cid].volume_ul <= 0:
                 _reject(b, "mix", args, f"{cid} is empty")
-            r = b.travel(b.believed_pos(cid))
-            for _ in range(max(1, cycles)):
-                if r["ok"]:
-                    p = b.believed_pos(cid)
-                    b.move_to(p + [0, 0, 0.01], duration_s=0.1)
-                    r = b.move_to(p, duration_s=0.1)
-            landed = b._resolve_landing(cid)
+            sk = b.skills
+            sk.set_active_point("nozzle")
+            r = sk.travel_to(cid, clearance=0.04)
+            if r.ok:
+                r = sk.descend(0.05)                         # nozzle into the liquid
+            for _ in range(max(1, cycles)):                  # pipette up and down
+                if not r.ok:
+                    break
+                sk.descend(-0.015)
+                r = sk.descend(0.015)
+            landed = b._resolve_landing(cid, sk.tip()[:2]) if r.ok else None
             if landed == cid:
                 b.actual[cid].mixed = True
             b.nominal[cid].mixed = True
-            b.park()
+            sk.ascend()
             disc = [] if landed == cid else [f"tip was not inside {cid}; liquid not mixed"]
             return _result(b, "mix", args, {"lab_time_min": round(b.clock_min, 2)},
                            discrepancies=disc, actual={"mixed": landed == cid}, ok=not disc)

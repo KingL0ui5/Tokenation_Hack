@@ -29,8 +29,6 @@ import numpy as np
 
 EE_SITE = "attachment_site"
 ARM_JOINTS = 7
-OBSTACLES = ["bench", "plate_collision", "incubator", "plate_reader", "tube_rack",
-             "pipette_holder", "waste_bin"]
 SAFE_Z = 0.20               # tip travel height (clears reader/incubator tops at 0.10 m)
 PLATE_HOVER = 0.08          # hover between wells; keeps the 20 cm-wide hand above the incubator
 APPROACH_STEP = 0.025       # descend via a waypoint this far above the target
@@ -41,11 +39,6 @@ LAB_SECONDS_PER_MOVE = 1.5
 # Vessel geometry from lab_sim/scenes/build_lab.py (radius, height in metres).
 VESSELS = {"well": (0.007, 0.012), "tube": (0.006, 0.040), "reservoir": (0.025, 0.050)}
 RESERVOIR_START_UL = 20_000.0
-
-
-def _capacity_ul(kind: str) -> float:
-    r, h = VESSELS[kind]
-    return math.pi * r * r * h * 1e9  # m^3 -> uL
 
 
 @dataclass
@@ -105,11 +98,13 @@ class LabBackend:
                  plate_offset_mm: tuple[float, float] = (0.0, 0.0),
                  pipette_bias: float | None = None):
         logging.getLogger("mink").setLevel(logging.ERROR)
-        from lab_sim.scenes.build_lab import load_model  # Lok's scene loader
+        from lab_sim.scenes.build_lab import load_model, scene_contract  # Lok's scene + contract
 
         streams = np.random.SeedSequence(seed).spawn(2)
         self.rng = {k: np.random.default_rng(s) for k, s in zip(["reset", "command"], streams)}
         self.model = load_model()
+        self.contract = scene_contract(self.model)              # scene publishes its own contract
+        self.vessels = {t: (v.radius_m, v.height_m) for t, v in self.contract.vessels.items()}
         self.data = mujoco.MjData(self.model)
         mujoco.mj_resetDataKeyframe(self.model, self.data, 0)
         mujoco.mj_forward(self.model, self.data)
@@ -117,31 +112,30 @@ class LabBackend:
         self.down = self.data.site_xmat[self.ee].reshape(3, 3).copy()
         self._init_ik()
 
-        self.wells = sorted((self.model.site(i).name[5:] for i in range(self.model.nsite)
-                             if self.model.site(i).name.startswith("well_")),
+        # short well labels ("B3") for the default single plate
+        self.wells = sorted((s[len("well_"):] for s in self.contract.wells if s.startswith("well_")),
                             key=lambda w: (w[0], int(w[1:])))
         # Where the robot believes each well is; a non-zero offset mis-seats the plate.
         self._believed = {w: self.site_pos(f"well_{w}") for w in self.wells}
         self.plate_offset = np.array([*plate_offset_mm, 0.0]) / 1000.0
-        self.actual: dict[str, Container] = {}
-        for i in range(self.model.nsite):
-            name = self.model.site(i).name
-            kind = ("well" if name.startswith("well_") else "tube" if name.startswith("rack_")
-                    else "reservoir" if name.startswith("reservoir_") else None)
-            if kind:
-                c = Container(name, kind, _capacity_ul(kind), slot=name)
-                if kind == "reservoir":
-                    reagent = name[len("reservoir_"):]
-                    c.add({reagent: 1.0}, RESERVOIR_START_UL, 0.0)
-                self.actual[name] = c
+
+        # containers: wells + reagent stock tubes (the reagent sources), all from the contract
+        well_cap = self.contract.vessels["well"].capacity_ul
+        tube_cap = self.contract.vessels["tube"].capacity_ul
+        self.actual: dict[str, Container] = {
+            f"well_{w}": Container(f"well_{w}", "well", well_cap, slot=f"well_{w}") for w in self.wells}
+        for reagent, site in self.contract.reagents.items():
+            c = Container(site, "tube", tube_cap, slot=site)
+            c.add({reagent: 1.0}, REAGENT_START_UL, 0.0)
+            self.actual[site] = c
         self.nominal = {k: Container(**{**asdict(v), "composition": dict(v.composition)})
                         for k, v in self.actual.items()}
-        self.reagents = [k[len("reservoir_"):] for k, v in self.actual.items() if v.kind == "reservoir"]
+        self.reagents = list(self.contract.reagents)
 
         r = self.rng["reset"]
         self.pipette_bias = float(r.normal(0, 0.01)) if pipette_bias is None else pipette_bias
         self.budget = {"wells": budget_wells,
-                       "reagent_ul": dict(reagent_budget_ul or {k: RESERVOIR_START_UL for k in self.reagents})}
+                       "reagent_ul": dict(reagent_budget_ul or {k: REAGENT_START_UL for k in self.reagents})}
         self.wells_used: set[str] = set()
         self.reagent_used_ul: dict[str, float] = {}
 
@@ -151,6 +145,10 @@ class LabBackend:
         self.incidents: list[dict] = []        # spills/collisions logged for later use; not yet acted on
         self.liquid_geom = {w: self.model.geom(f"liquid_well_{w}").id for w in self.wells}
         self._liquid_base = {w: self.model.geom_pos[g].copy() for w, g in self.liquid_geom.items()}
+
+        # Skills for the held-pipette motion path (IK targets the pipette nozzle, not the EE).
+        from lab_sim.robot.skills import PipetteSkills
+        self.skills = PipetteSkills(self.model, self.data, self.contract.obstacles, safe_z=0.22)
 
     # ================================================================ geometry
     def site_pos(self, name: str) -> np.ndarray:
@@ -175,8 +173,7 @@ class LabBackend:
         self.posture_task = mink.PostureTask(m, cost=1e-2)
         self.posture_task.set_target(self.data.qpos.copy())
         robot = mink.get_subtree_geom_ids(m, m.body("link0").id)
-        obstacles = [m.geom(n).id for n in OBSTACLES] + [
-            m.geom(i).id for i in range(m.ngeom) if m.geom(i).name.startswith("collide_reservoir")]
+        obstacles = [m.geom(n).id for n in self.contract.obstacles]
         self.limits = [mink.ConfigurationLimit(m), mink.CollisionAvoidanceLimit(
             m, geom_pairs=[(robot, obstacles)], minimum_distance_from_collisions=0.005,
             collision_detection_distance=0.05)]
@@ -270,37 +267,55 @@ class LabBackend:
         r = self.rng["command"]
         return max(0.0, volume * (1 + self.pipette_bias + r.normal(0, 0.01)) + r.normal(0, 0.15))
 
-    def _resolve_landing(self, container_id: str) -> str | None:
-        """Where liquid released over `container_id` really goes."""
-        tip = self.tip()[:2]
-        radius = VESSELS[self.actual[container_id].kind][0]
+    def _resolve_landing(self, container_id: str, tip_xy=None) -> str | None:
+        """Where liquid released over `container_id` really goes. `tip_xy` defaults to the
+        hand EE (old motion path); the skills-based pipette passes the pipette nozzle xy."""
+        tip = self.tip()[:2] if tip_xy is None else np.asarray(tip_xy)[:2]
+        radius = self.vessels[self.actual[container_id].kind][0]
         if container_id.startswith("well_"):
             d = {f"well_{w}": float(np.linalg.norm(tip - self.actual_pos(f"well_{w}")[:2])) for w in self.wells}
             near = min(d, key=d.get)
             return near if d[near] <= radius else None
         return container_id if np.linalg.norm(tip - self.actual_pos(container_id)[:2]) <= radius else None
 
+    APPROACH_CLEAR = 0.04      # hover this far above an opening before descending
+    ENTER_DEPTH = 0.055        # slow vertical descent, nozzle enters the opening
+
     def pipette(self, source: str, dest: str, volume: float) -> dict:
-        """Fresh tip, aspirate from source, dispense over dest; repeats for >1 tip volume."""
-        actual_dest, delivered, events = dest, 0.0, []
-        self.clock_min += 5 / 60  # tip change
+        """Held-pipette path: aspirate from source, dispense over dest, via robot/skills.py
+        (IK targets the pipette nozzle). Repeats for >1 tip volume. Returns per-move tip
+        positions/errors in `moves` and liquid events in `events`; never raises."""
+        sk = self.skills
+        sk.set_active_point("nozzle")
+        actual_dest, delivered, events, moves = dest, 0.0, [], []
+        self.clock_min += 5 / 60   # tip change
         remaining = volume
         while remaining > 1e-9:
             chunk = min(remaining, TIP_CAPACITY_UL)
             remaining -= chunk
-            r = self.travel(self.believed_pos(source))
-            if not r["ok"]:
-                return {"ok": False, "reason": "source unreachable", "delivered_ul": delivered}
-            if self._resolve_landing(source) != source:
+
+            # --- aspirate from source ---
+            r = sk.travel_to(source, self.APPROACH_CLEAR); moves.append(("travel", source, r))
+            if not r.ok:
+                return {"ok": False, "reason": f"source: {r.reason}", "delivered_ul": delivered, "moves": moves}
+            r = sk.descend(self.ENTER_DEPTH); moves.append(("descend", source, r))
+            if not r.ok:
+                sk.ascend()
+                return {"ok": False, "reason": f"source descend: {r.reason}", "delivered_ul": delivered, "moves": moves}
+            if self._resolve_landing(source, sk.tip()[:2]) != source:
                 self.log("aspirate_miss", source=source)
-                return {"ok": False, "reason": f"tip not inside {source}", "delivered_ul": delivered}
+                sk.ascend()
+                return {"ok": False, "reason": f"tip not inside {source}", "delivered_ul": delivered, "moves": moves}
             taken = self.actual[source].remove(self._pipetting_error(chunk))
-            hover = PLATE_HOVER if dest.startswith("well_") and source.startswith("well_") else SAFE_Z
-            r = self.travel(self.believed_pos(dest), hover=hover)
-            if not r["ok"]:
-                self.log("spill", container=dest, volume_ul=round(sum(taken.values()), 2), reason="unreachable")
-                return {"ok": False, "reason": "destination unreachable", "delivered_ul": delivered}
-            landed = self._resolve_landing(dest)
+            moves.append(("ascend", source, sk.ascend()))
+
+            # --- dispense over dest ---
+            r = sk.travel_to(dest, self.APPROACH_CLEAR); moves.append(("travel", dest, r))
+            if not r.ok:
+                self.log("spill", container=dest, volume_ul=round(sum(taken.values()), 2), reason=r.reason)
+                return {"ok": False, "reason": f"dest: {r.reason}", "delivered_ul": delivered, "moves": moves}
+            r = sk.descend(self.ENTER_DEPTH); moves.append(("descend", dest, r))
+            landed = self._resolve_landing(dest, sk.tip()[:2]) if r.ok else None
             amount = sum(taken.values())
             if landed is None:
                 events.append(self.log("spill", container=dest, volume_ul=round(amount, 2)))
@@ -309,9 +324,10 @@ class LabBackend:
                     events.append(self.log("wrong_well", intended=dest, actual=landed, volume_ul=round(amount, 2)))
                 self.actual[landed].add(taken, amount, self.clock_min)
                 self._show_level(landed)
-                actual_dest = landed
-                delivered += amount
-        return {"ok": True, "actual_dest": actual_dest, "delivered_ul": delivered, "events": events}
+                actual_dest, delivered = landed, delivered + amount
+            moves.append(("ascend", dest, sk.ascend()))
+        return {"ok": True, "actual_dest": actual_dest, "delivered_ul": delivered,
+                "events": events, "moves": moves}
 
     # ================================================================ visuals
     def _show_level(self, container_id: str) -> None:
@@ -319,7 +335,7 @@ class LabBackend:
             return
         w = container_id[5:]
         c = self.actual[container_id]
-        half = max(1e-4, min(1.0, c.volume_ul / c.capacity_ul) * VESSELS["well"][1] * 0.45)
+        half = max(1e-4, min(1.0, c.volume_ul / c.capacity_ul) * self.vessels["well"][1] * 0.45)
         g = self.liquid_geom[w]
         self.model.geom_size[g][1] = half
         self.model.geom_pos[g][2] = self._liquid_base[w][2] + half
