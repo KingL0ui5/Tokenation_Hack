@@ -116,17 +116,18 @@ def get_event_log(lab: Lab) -> Tool:
 
 @tool
 def capture_camera(lab: Lab) -> Tool:
-    async def execute(camera: str = "overview") -> ContentImage | str:
-        """Render an image of the lab from a fixed camera.
+    async def execute(camera: str = "front") -> ContentImage | str:
+        """Render an image of the lab from a fixed camera. Wells show liquid level, and
+        are coloured yellow by their last A405 read.
 
         Args:
-            camera: "overview" (whole arm and deck) or "deck_top" (top-down over plate and rack).
+            camera: "front" (arm and bench), "side", or "plate_top" (top-down over the plate).
 
         Returns:
             A PNG image.
         """
-        if camera not in ("overview", "deck_top"):
-            raise ToolError("camera must be 'overview' or 'deck_top'")
+        if camera not in lab.world.cameras:
+            raise ToolError(f"camera must be one of {lab.world.cameras}")
         try:
             png = lab.world.render_png(camera)
         except Exception as e:  # no OpenGL context available
@@ -199,7 +200,8 @@ def move_tip_to(lab: Lab) -> Tool:
         """Move the pipette tip above a named location.
 
         Args:
-            location: "home", "well:<A1..H12>" or "reservoir:<reagent name>".
+            location: "home", "well:<A1..D6>", "reservoir:<reagent name>" or a lab_sim
+                station: "station_reader", "station_incubator", "waste", "pipette_grip".
 
         Returns:
             JSON with achieved tip position and tracking error.
@@ -208,10 +210,12 @@ def move_tip_to(lab: Lab) -> Tool:
         if location == "home":
             return _j(w.home())
         kind, _, name = location.partition(":")
-        if kind == "well" and name in C.WELLS:
-            r = w.travel(w.nominal_well_pos(name) + [0, 0, C.WORK_Z_OFFSET])
+        if kind == "well" and name in w.wells:
+            r = w.travel(w.nominal_well_pos(name))
         elif kind == "reservoir" and name in w.reservoir_index:
-            r = w.travel(w.reservoir_pos(name) + [0, 0, C.WORK_Z_OFFSET])
+            r = w.travel(w.reservoir_pos(name))
+        elif location in ("station_reader", "station_incubator", "station_bench", "waste", "pipette_grip"):
+            r = w.travel(w.site_pos(location))
         else:
             raise ToolError(f"unknown location {location!r}")
         if not r["ok"]:
@@ -261,16 +265,17 @@ def aspirate(lab: Lab) -> Tool:
 @tool
 def dispense(lab: Lab) -> Tool:
     async def execute(well: str, volume_ul: float) -> str:
-        """Move to a well and dispense from the tip. Reports spills (tip outside the well).
+        """Move to a well of the plate on the bench and dispense from the tip. Reports where the
+        liquid actually went: the intended well, a neighbouring well, or a spill.
 
         Args:
-            well: Well name A1..H12.
+            well: Well name A1..D6 on the current plate.
             volume_ul: Volume in microlitres.
 
         Returns:
-            JSON with delivered volume, spill flag and positional error.
+            JSON with intended and actual well, delivered volume, spill flag and positional error.
         """
-        if well not in C.WELLS:
+        if well not in lab.world.wells:
             raise ToolError(f"unknown well {well!r}")
         r = lab.world.dispense(well, volume_ul)
         if not r["ok"]:
@@ -299,20 +304,22 @@ def change_tip(lab: Lab) -> Tool:
 def design_batch(lab: Lab) -> Tool:
     async def execute(conditions: list[dict[str, Any]], controls: list[str], replicates: int = 3,
                       avoid_edges: bool = False, off_grid_reasons: dict[str, str] | None = None) -> str:
-        """Validate a batch and lay it out on a 96-well plate. No robot motion happens yet.
+        """Validate a batch and lay it out over 24-well plates (4x6). No robot motion happens yet.
 
         Each condition is {"buffer": DEA|Tris|Glycine|PBS, "pH": 7.0|8.0|9.0|10.0,
         "substrate"|"MgCl2"|"ZnCl2"|"NaCl"|"glycerol": L1|L2|L3|L4, "temperature": 25|30|37|45}.
         Levels are fractions of each maximum (L1=10%, L2=30%, L3=50%, L4=100%).
         Every condition passes the hazard interlock. The batch is rejected if any
         mandatory control is missing: reference, blanks, positive, standard_curve,
-        carry_over (carry_over not needed on the first plate).
+        carry_over (carry_over not needed on the first plate). A batch larger than one
+        plate runs over several plate loads (up to 6); wells are named "P<plate>:<well>",
+        e.g. "P2:B3", and the controls cover the whole batch.
 
         Args:
             conditions: Conditions to test (each run in replicate).
             controls: Control types to include.
             replicates: Replicates per condition (protocol default 3).
-            avoid_edges: Keep wells off the plate's outer ring (fewer wells, no evaporation artefact).
+            avoid_edges: Keep wells off each plate's outer ring (8 of 24 wells per plate remain; no evaporation artefact).
             off_grid_reasons: Map of condition index (as string) to the reason for an off-grid value.
 
         Returns:

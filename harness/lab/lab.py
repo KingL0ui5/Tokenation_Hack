@@ -1,14 +1,17 @@
 """The simulated lab the agent's tools talk to.
 
-Flow for one plate: design_batch() validates conditions and mandatory controls
-and lays out wells -> run_plate() has the robot pipette every transfer in
-MuJoCo, incubates per temperature group, starts reactions with enzyme, reads
-A405 kinetically, then computes rates, yields, outliers and the validity gate.
+Flow for one batch: design_batch() validates conditions and mandatory controls
+and lays the wells out over as many plate loads as needed (lab_sim's plate has
+24 wells; wells are named "P1:A1", "P2:C4", ...) -> run_plate() has the robot
+on the lab_sim scene pipette every transfer, plate by plate, incubate per
+temperature group, start reactions with enzyme and read A405 kinetically, then
+computes rates, yields, outliers and the validity gate over the whole batch.
 """
 
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,10 +20,11 @@ import numpy as np
 from . import analysis as A
 from . import config as C
 from .chemistry import EnzymeParams, EnzymeWorld, WellContents
-from .sim import LabWorld
+from .labsim_world import PLATE_HOVER, LabSimWorld
 
 HAZARDS_PATH = Path(__file__).with_name("hazards.json")
 MANDATORY_CONTROLS = ["reference", "blanks", "positive", "standard_curve", "carry_over"]
+MAX_PLATES_PER_BATCH = 6
 STOCKS = {  # concentration of each stock reservoir, in final-well units x volume factor
     "substrate": 10 * C.ADDITIVES["substrate"][0],
     "MgCl2": 10 * C.ADDITIVES["MgCl2"][0],
@@ -57,7 +61,7 @@ class Lab:
     def __init__(self, seed: int = 0, budget_wells: int = 480, faults: dict | None = None):
         self.rng = np.random.default_rng(seed)
         self.faults = faults or {}
-        self.world = LabWorld(seed=seed, plate_offset_mm=tuple(self.faults.get("plate_offset_mm", (0, 0))))
+        self.world = LabSimWorld(seed=seed, plate_offset_mm=tuple(self.faults.get("plate_offset_mm", (0, 0))))
         self.enzyme = EnzymeWorld(EnzymeParams.sample(np.random.default_rng(seed + 10_000)), self.rng)
         if "enzyme_decay_per_hour" in self.faults:
             self.enzyme.enzyme_decay_per_hour = self.faults["enzyme_decay_per_hour"]
@@ -117,13 +121,22 @@ class Lab:
                 "plates_run": len(self.plates_run)}
 
     def deck_layout(self) -> dict:
-        return {
-            "plate": {"center_m": list(C.PLATE_CENTER), "format": "96-well, rows A-H along x, cols 1-12 along y",
-                      "well_pitch_m": C.WELL_PITCH, "edge_wells": sorted(C.EDGE_WELLS)},
-            "reservoirs": {name: self.world.reservoir_pos(name).round(4).tolist()
-                           for name in self.world.reservoir_index},
-            "safe_travel_z_m": C.SAFE_Z,
-        }
+        return {**self.world.layout(),
+                "batches": f"a batch larger than one plate runs over several plate loads (max "
+                           f"{MAX_PLATES_PER_BATCH}); wells are named P<plate>:<well>, e.g. P2:B3"}
+
+    # ------------------------------------------------------- well naming
+    @staticmethod
+    def split_well(logical: str) -> tuple[int, str]:
+        plate, _, well = logical.partition(":")
+        return int(plate[1:]), well
+
+    def is_edge(self, logical: str) -> bool:
+        return self.split_well(logical)[1] in self.world.edge_wells
+
+    def slots(self, plates: int, avoid_edges: bool) -> list[str]:
+        per_plate = [w for w in self.world.wells if not (avoid_edges and w in self.world.edge_wells)]
+        return [f"P{n}:{w}" for n in range(1, plates + 1) for w in per_plate]
 
     # ============================================================= design
     def design_batch(self, conditions: list[dict], controls: list[str], replicates: int = 3,
@@ -166,12 +179,16 @@ class Lab:
             for r in range(3):
                 plan.append(WellPlan("", "carry_over", self.volumes_for(best), best["temperature"], best, r, "carry_over"))
 
-        slots = [w for w in C.WELLS if not (avoid_edges and w in C.EDGE_WELLS)]
-        if len(plan) > len(slots):
-            return {"accepted": False, "errors": [{"problem": f"plate needs {len(plan)} wells, only {len(slots)} available"
-                                                   + (" (edges avoided)" if avoid_edges else "")}]}
+        per_plate = len(self.slots(1, avoid_edges))
+        plates = math.ceil(len(plan) / per_plate)
+        if plates > MAX_PLATES_PER_BATCH:
+            return {"accepted": False, "errors": [{
+                "problem": f"batch needs {len(plan)} wells = {plates} plates of {per_plate}"
+                           + (" (edges avoided)" if avoid_edges else "")
+                           + f"; at most {MAX_PLATES_PER_BATCH} plates per batch"}]}
         if self.wells_used + len(plan) > self.budget_wells:
             return {"accepted": False, "errors": [{"problem": "over well budget", **self.budget()}]}
+        slots = self.slots(plates, avoid_edges)
         chosen = sorted(self.rng.choice(len(slots), size=len(plan), replace=False))
         self.rng.shuffle(plan)  # randomised layout, so position effects do not align with conditions
         for wp, k in zip(plan, chosen):
@@ -182,23 +199,24 @@ class Lab:
         roles = {}
         for wp in plan:
             roles[wp.role] = roles.get(wp.role, 0) + 1
-        return {"accepted": True, "batch_id": batch_id, "wells": len(plan), "well_roles": roles,
-                "temperature_groups": sorted({wp.temperature for wp in plan}),
+        return {"accepted": True, "batch_id": batch_id, "wells": len(plan), "plates": plates,
+                "well_roles": roles, "temperature_groups": sorted({wp.temperature for wp in plan}),
                 "plate_map": {wp.well: f"{wp.role}:{wp.tag}#{wp.replicate}" for wp in plan}}
 
     # ============================================================ execute
     def _execute(self, plan: list[WellPlan], wavelengths=(405,)) -> tuple[dict, dict]:
-        """Robot pipettes every transfer; returns (well contents, reads)."""
+        """Robot pipettes every transfer, plate load by plate load; returns (well contents, reads)."""
         w = self.world
         delivered = {wp.well: {} for wp in plan}
         enzyme_added_at: dict[str, float] = {}
+        start_time: dict[str, float] = {}
+        read_clock: dict[str, float] = {}
         nominal_total: dict[str, float] = {}
-        exec_log = {"transfers": 0, "spills": 0, "aspirate_failures": 0, "ik_failures": 0, "collisions": 0}
+        exec_log = {"plates": 0, "transfers": 0, "spills": 0, "wrong_well": 0, "aspirate_failures": 0,
+                    "ik_failures": 0, "collisions": 0}
         ev_start = len(w.events)
-        reagents = sorted({r for wp in plan for r in wp.volumes}, key=lambda r: (r == "enzyme", r))
-        plate_hover = C.PLATE_CENTER[2] + 0.03
 
-        def pipette_reagent(reagent: str, targets: list[WellPlan]):
+        def pipette_reagent(reagent: str, targets: list[WellPlan], plate: int):
             w.change_tip()
             queue = [(wp.well, wp.volumes[reagent]) for wp in targets if wp.volumes.get(reagent, 0) > 0]
             while queue:
@@ -210,32 +228,41 @@ class Lab:
                 if not r["ok"]:
                     exec_log["aspirate_failures"] += 1
                     continue
-                for well, vol in chunk:
-                    d = w.dispense(well, vol, hover=plate_hover)
+                for logical, vol in chunk:
+                    d = w.dispense(self.split_well(logical)[1], vol, hover=PLATE_HOVER)
                     exec_log["transfers"] += 1
                     if not d["ok"]:
                         continue
-                    exec_log["spills"] += int(d["spilled"])
-                    delivered[well][reagent] = delivered[well].get(reagent, 0.0) + d["delivered_ul"]
-                    if reagent == "enzyme":
-                        enzyme_added_at[well] = w.clock_min
                     nominal_total[reagent] = nominal_total.get(reagent, 0.0) + vol
+                    if d["spilled"]:
+                        exec_log["spills"] += 1
+                        continue
+                    landed = f"P{plate}:{d['actual_well']}"
+                    exec_log["wrong_well"] += int(landed != logical)
+                    if landed in delivered:  # liquid in an unused well is lost to the experiment
+                        delivered[landed][reagent] = delivered[landed].get(reagent, 0.0) + d["delivered_ul"]
+                    if reagent == "enzyme":
+                        enzyme_added_at[landed] = w.clock_min
 
-        for reagent in [r for r in reagents if r != "enzyme"]:
-            pipette_reagent(reagent, plan)
-
-        # Incubate per temperature group, then start reactions with enzyme. The
-        # reader reads the whole group at once when the last well is started,
-        # so early wells have already been reacting for a while.
-        start_time: dict[str, float] = {}
-        for temp in sorted({wp.temperature for wp in plan}):
-            w.clock_min += 5.0  # thermal equilibration
-            members = [wp for wp in plan if wp.temperature == temp]
-            group_start = w.clock_min
-            pipette_reagent("enzyme", members)
-            read_start = w.clock_min
-            for wp in members:
-                start_time[wp.well] = read_start - enzyme_added_at.get(wp.well, group_start)
+        for plate in sorted({self.split_well(wp.well)[0] for wp in plan}):
+            if any(v > 0 for v in w.well_volume.values()):
+                w.swap_plate()
+            exec_log["plates"] += 1
+            on_plate = [wp for wp in plan if self.split_well(wp.well)[0] == plate]
+            reagents = sorted({r for wp in on_plate for r in wp.volumes} - {"enzyme"})
+            for reagent in reagents:
+                pipette_reagent(reagent, on_plate, plate)
+            # Incubate per temperature group, then start reactions with enzyme. The reader
+            # reads the group when the last well is started, so early wells have already
+            # been reacting for a while.
+            for temp in sorted({wp.temperature for wp in on_plate}):
+                w.clock_min += 5.0  # thermal equilibration
+                members = [wp for wp in on_plate if wp.temperature == temp]
+                group_start = w.clock_min
+                pipette_reagent("enzyme", members, plate)
+                for wp in members:
+                    start_time[wp.well] = w.clock_min - enzyme_added_at.get(wp.well, group_start)
+                    read_clock[wp.well] = w.clock_min
         w.home()
 
         contamination = self.faults.get("contaminated_reagent", {})
@@ -259,15 +286,19 @@ class Lab:
             for reagent, pi_mM in contamination.items():
                 wc.phosphate_mM += pi_mM * got.get(reagent, 0) / total
             contents[wp.well] = wc
-            age_h = 0.0 if wp.role == "positive" else w.clock_min / 60.0
-            offset = start_time.get(wp.well, 0.0)
-            times = [t + offset for t in C.READ_TIMES_MIN]
-            reads[wp.well] = {wl: self.enzyme.absorbance(wc, times, wp.well, wl, age_h).round(4).tolist()
+            age_h = 0.0 if wp.role == "positive" else read_clock.get(wp.well, w.clock_min) / 60.0
+            times = [t + start_time.get(wp.well, 0.0) for t in C.READ_TIMES_MIN]
+            reads[wp.well] = {wl: self.enzyme.absorbance(wc, times, self.is_edge(wp.well), wl, age_h).round(4).tolist()
                               for wl in wavelengths}
         if self.faults.get("reader_drift_batches") and len(self.plates_run) + 1 in self.faults["reader_drift_batches"]:
             for well in reads:  # lamp drift: gain grows with absorbance, bending the standard curve
                 for wl in reads[well]:
                     reads[well][wl] = [round(a * (1 + 0.25 * a), 4) for a in reads[well][wl]]
+        last_plate = max(self.split_well(wp.well)[0] for wp in plan)
+        for wp in plan:  # colour the plate still on the bench by its final read
+            plate, well = self.split_well(wp.well)
+            if plate == last_plate:
+                w.show_absorbance(well, reads[wp.well][405][-1])
 
         for ev in w.events[ev_start:]:
             if ev.kind in ("ik_failure", "collision"):
@@ -334,7 +365,7 @@ class Lab:
                 "yield_sd": None if o["sd"] is None else round(o["sd"], 4),
                 "replicates": {wp.well: (None if y is None else round(y, 4)) for wp, y in zip(wps, ys)},
                 "cv_before_rule": o["cv"], "outlier_dropped_well": dropped_well,
-                "outlier_is_edge_well": dropped_well in C.EDGE_WELLS if dropped_well else None,
+                "outlier_is_edge_well": self.is_edge(dropped_well) if dropped_well else None,
                 "rate_indeterminate_wells": [wp.well for wp in wps if rate[wp.well]["rate_indeterminate"]],
             })
 
@@ -414,7 +445,9 @@ class Lab:
 
     # ===================================================== confirmations
     def _small_plan(self, specs: list[tuple[str, dict, float, dict | None, str]]) -> list[WellPlan]:
-        free = [w for w in C.WELLS if w not in C.EDGE_WELLS]
+        # Confirmations use inner wells only, over as many plate loads as they need.
+        per_plate = len(self.slots(1, avoid_edges=True))
+        free = self.slots(math.ceil(len(specs) / per_plate), avoid_edges=True)
         plan = []
         for (role, vols, temp, cond, tag), well in zip(specs, free):
             plan.append(WellPlan(well, role, vols, temp, cond, 0, tag))

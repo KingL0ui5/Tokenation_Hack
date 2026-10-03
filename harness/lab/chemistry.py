@@ -168,12 +168,12 @@ class EnzymeWorld:
         return float(((c[1] - c[0]) - (b[1] - b[0])) / 0.5 * 1000.0 / ug)
 
     # -------------------------------------------------------------- reader
-    def absorbance(self, w: WellContents, times_min, well: str, wavelength_nm: int = 405,
+    def absorbance(self, w: WellContents, times_min, edge: bool, wavelength_nm: int = 405,
                    enzyme_age_h: float = 0.0) -> np.ndarray:
         evap = 1.0
         activity_cv = self.p.noise_cv   # well-to-well enzyme activity variation
         optical_cv = 0.012
-        if well in C.EDGE_WELLS:
+        if edge:
             evap = 1.0 + self.rng.uniform(0.04, 0.12)
             activity_cv *= 1.8
             optical_cv *= 1.8

@@ -36,34 +36,23 @@ REFERENCE = {
     "ZnCl2": "L3", "NaCl": "L2", "glycerol": "L1", "temperature": 37,
 }
 
-# Liquid handling. Well volume 300 uL; additive stocks are 10x the L4 maximum,
-# so L4 = 30 uL and L1 = 3 uL (small volumes are deliberately noisier).
-WELL_VOLUME_UL = 300.0
-BUFFER_VOLUME_UL = 100.0          # 3x buffer stock
-ADDITIVE_L4_VOLUME_UL = 30.0      # 10x stock
-ENZYME_VOLUME_UL = 10.0
-ENZYME_UG_PER_WELL = 0.05         # nominal enzyme mass at 1x
+# Liquid handling, sized for lab_sim's 4x6 plate (14 mm wells, like a 24-well plate).
+# Additive stocks are 10x the L4 maximum, so L4 = 100 uL and L1 = 10 uL.
+WELL_VOLUME_UL = 1000.0
+BUFFER_VOLUME_UL = WELL_VOLUME_UL / 3          # 3x buffer stock
+ADDITIVE_L4_VOLUME_UL = WELL_VOLUME_UL / 10    # 10x stock
+ENZYME_VOLUME_UL = WELL_VOLUME_UL / 30
+ENZYME_UG_PER_WELL = 0.15         # nominal enzyme mass at 1x
 TIP_CAPACITY_UL = 1000.0
-
-ROWS = "ABCDEFGH"
-COLS = range(1, 13)
-WELLS = [f"{r}{c}" for r in ROWS for c in COLS]
-EDGE_WELLS = {w for w in WELLS if w[0] in "AH" or w[1:] in ("1", "12")}
 
 READ_TIMES_MIN = [0.0, 2.0, 4.0, 6.0, 8.0, 10.0]
 DETECTOR_LINEAR_MAX_A = 2.5
 DETECTOR_SATURATION_A = 3.5
 PNP_EPSILON_405 = 18.5            # mM^-1 cm^-1 for p-nitrophenolate
-PATH_LENGTH_CM = 0.85             # 300 uL in a 96-well plate
+PATH_LENGTH_CM = 0.65             # 1000 uL in a 14 mm well (lab_sim WELL_R = 7 mm)
 STANDARD_CURVE_MM = [0.0, 0.025, 0.05, 0.08, 0.12]  # top point stays below the 2.5 A linear limit
 
-# Deck geometry (metres, world frame; Panda base at origin).
-PLATE_CENTER = (0.50, -0.06, 0.04)
-WELL_PITCH = 0.009
-RACK_CENTER = (0.50, 0.21, 0.05)
-RACK_PITCH = 0.025
-SAFE_Z = 0.20                     # travel height for the pipette tip
-WORK_Z_OFFSET = 0.01              # tip height above the well/reservoir top
+# Plate geometry (wells, edge wells, positions) comes from the lab_sim scene; see labsim_world.py.
 
 
 def buffer_reagent(buffer: str, ph: float) -> str:

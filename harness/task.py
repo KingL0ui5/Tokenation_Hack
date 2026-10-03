@@ -21,8 +21,9 @@ from harness.tools.lab_tools import lab_tools
 PROTOCOL = (Path(__file__).parent / "prompts" / "protocol.md").read_text()
 
 SYSTEM = f"""You are the scientist agent running a simulated wet lab. A Franka Panda arm
-with a single-channel pipette, a 96-well plate, a reagent rack and a kinetic plate
-reader (A405) are under your control through tools. Optimise the enzyme's initial
+with a pipette, 24-well plates (4x6, swapped between plate loads), reagent reservoirs
+and stock tubes, and a kinetic plate reader (A405) are under your control through
+tools. Optimise the enzyme's initial
 rate following the protocol below. Record priors and every decision in the notebook
 (record_prior, revise_prior, add_reasoning_node) so your reasoning forms a graph.
 Use the analysis tools for all statistics. Finish with submit_report.
@@ -31,13 +32,14 @@ Use the analysis tools for all statistics. Finish with submit_report.
 
 OBJECTIVE = """Objective: find the condition on the grid that maximises the alkaline
 phosphatase initial rate (yield relative to the reference composition).
-Budget: {budget} wells in total (each plate holds 96; confirmations use extra wells).
+Budget: {budget} wells in total (each plate holds 24; a batch may span several plates;
+confirmations use extra wells).
 The enzyme is a recombinant alkaline phosphatase isoform with no curated kinetic entry."""
 
 SCENARIOS = [
     {"id": "nominal-1", "seed": 1, "faults": {}},
     {"id": "nominal-2", "seed": 2, "faults": {}},
-    {"id": "misseated-plate", "seed": 3, "faults": {"plate_offset_mm": [4.0, 0.0]}},
+    {"id": "misseated-plate", "seed": 3, "faults": {"plate_offset_mm": [0.0, 9.0]}},   # 7 mm wells: spills
     {"id": "phosphate-in-water", "seed": 4, "faults": {"contaminated_reagent": {"water": 2.0}}},
     {"id": "reader-drift-plate-2", "seed": 5, "faults": {"reader_drift_batches": [2]}},
 ]

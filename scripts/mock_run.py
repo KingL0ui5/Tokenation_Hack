@@ -22,7 +22,7 @@ calls = [
     ("get_deck_layout", {}),
     ("move_tip_to", dict(location="well:A1")),
     ("get_robot_state", {}),
-    ("capture_camera", dict(camera="overview")),
+    ("capture_camera", dict(camera="front")),
     ("move_tip_to", dict(location="home")),
     ("design_batch", dict(conditions=CONDS, controls=CTRL[:3])),   # should be rejected
     ("design_batch", dict(conditions=CONDS, controls=CTRL, avoid_edges=True)),
