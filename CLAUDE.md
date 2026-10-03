@@ -49,9 +49,12 @@ Run from `lab_sim/`:
 - Gap-based gripper (`close_gripper(gap)`); `grasp()` verifies both finger pads by contact.
 - `place()` snaps the tube kinematically into its slot and welds it to the world.
 - `ascend()` uses a stepped IK solve (reseeds from home if a solve stalls).
+- Weld contract: tubes start welded in their slots; `grasp()` frees its target's world weld
+  itself; `place()` snaps the object to its slot and re-welds it.
 
 ## Next tasks
 
 1. Tips (attach/eject; active point switches to tip end, no-collision over the whole tip).
-2. Held-object collisions (the carried tube/tip vs the scene).
+2. Held-object collisions (the carried tube/tip vs the scene). Note: the carry path
+   currently brushes neighbouring tubes (startup welds hide it); catch and fix it here.
 3. Pipetting depth (how far the tip descends into a vessel).
