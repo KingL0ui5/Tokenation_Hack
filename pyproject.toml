@@ -18,6 +18,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest",
+    "ty",
 ]
 
 [build-system]

@@ -27,31 +27,31 @@ TOUR = ["pipette_grip", "reservoir_enzyme", "well_B3", "well_D1", "well_A6",
 
 
 def site_xpos(model, data, name):
-    return data.site_xpos[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, name)].copy()
+    return data.site_xpos[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, name)].copy()  # ty: ignore[unresolved-attribute]
 
 
 def main() -> None:
-    model = load_model()
-    data = mujoco.MjData(model)
+    model = mujoco.MjModel.from_xml_path(XML)  # ty: ignore[unresolved-attribute]
+    data = mujoco.MjData(model)  # ty: ignore[unresolved-attribute]
     ee = "attachment_site"
-    ee_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, ee)
-    mujoco.mj_resetDataKeyframe(model, data, 0)
-    mujoco.mj_forward(model, data)
+    ee_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, ee)  # ty: ignore[unresolved-attribute]
+    mujoco.mj_resetDataKeyframe(model, data, 0)  # ty: ignore[unresolved-attribute]
+    mujoco.mj_forward(model, data)  # ty: ignore[unresolved-attribute]
     down_R = data.site_xmat[ee_id].reshape(3, 3).copy()
 
     frame_task = mink.FrameTask(ee, "site", position_cost=1.0, orientation_cost=1.0, lm_damping=1.0)
     posture_task = mink.PostureTask(model, cost=1e-2)
     posture_task.set_target(data.qpos.copy())
-    robot_geoms = mink.get_subtree_geom_ids(model, mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "link0"))
+    robot_geoms = mink.get_subtree_geom_ids(model, mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "link0"))  # ty: ignore[unresolved-attribute]
     obstacles = ["bench", "plate_collision", "incubator", "plate_reader", "tube_rack",
                  "pipette_holder", "waste_bin", "collide_reservoir_buffer", "collide_reservoir_enzyme",
                  "collide_reservoir_substrate", "collide_reservoir_inhibitor", "collide_reservoir_stop"]
-    obstacle_geoms = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, g) for g in obstacles]
+    obstacle_geoms = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, g) for g in obstacles]  # ty: ignore[unresolved-attribute]
     limits = [mink.ConfigurationLimit(model),
               mink.CollisionAvoidanceLimit(model, geom_pairs=[(robot_geoms, obstacle_geoms)],
                                            minimum_distance_from_collisions=0.005,
                                            collision_detection_distance=0.05)]
-    arm_act = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, f"actuator{i}") for i in range(1, 8)]
+    arm_act = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, f"actuator{i}") for i in range(1, 8)]  # ty: ignore[unresolved-attribute]
     servo = mink.Configuration(model, data.qpos)
 
     with mujoco.viewer.launch_passive(model, data) as viewer:
@@ -68,7 +68,7 @@ def main() -> None:
                     vel = mink.solve_ik(servo, [frame_task, posture_task], 0.01, "daqp", limits=limits)
                     servo.integrate_inplace(vel, 0.01)
                     data.ctrl[arm_act] = servo.q[:7]
-                    mujoco.mj_step(model, data)
+                    mujoco.mj_step(model, data)  # ty: ignore[unresolved-attribute]
                     viewer.sync()
 
 

@@ -80,7 +80,7 @@ def _submit_best():
     exps = s.graph.experiments
     if exps:
         pick = max if get_env(s.env).goal == "maximize" else min
-        submit_params(pick(exps, key=lambda e: e.result).params)
+        submit_params(pick(exps, key=lambda e: e.result).params)  # ty: ignore[invalid-argument-type]
 
 
 SOLVERS = {
