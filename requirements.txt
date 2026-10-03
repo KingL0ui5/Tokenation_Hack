@@ -6,8 +6,3 @@ daqp        # QP solver backend for mink
 pytest
 pillow          # saving camera snapshots
 opencv-python   # rendering IK demo videos (robot/ik_visualize.py)
-
-# harness/ (simulated lab, Inspect tools, scorer)
-scipy
-scikit-learn
-inspect-ai
