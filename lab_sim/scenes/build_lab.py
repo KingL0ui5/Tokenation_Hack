@@ -103,6 +103,7 @@ RACK_15ML_HOLES_X = (-0.090, -0.054, -0.018, 0.018, 0.054, 0.090)
 RACK_15ML_ROWS_Y = (-0.036, 0.0, 0.036)
 RACK_15ML_HOLE_R = 0.0085
 RACK_FLOOR_Z = 0.006
+RACK_FLOOR_THICK = 0.003           # lower plane spans z 3..6 mm
 # The empty 15 mL hole used as each rack's spare slot (rack-relative, back row; must be one of
 # the measured holes above). Its nearest stocked neighbour is 36 mm away, the same pitch the
 # gripper already threads between in the stocked middle row.
@@ -224,8 +225,10 @@ def reagent_tube(name, x, y, base_z, liquid_rgba) -> str:
 
 
 def reagent_rack(name, cx, cy) -> str:
-    """10-slot rack: 3 visual mesh parts + perimeter-wall colliders (open interior). Tubes are
-    snapped+world-welded into holes, so they don't physically settle against the walls."""
+    """10-slot rack: 3 visual mesh parts + perimeter-wall colliders (open interior) + a floor
+    collider matching the solid lower plane, so a tube freed from its slot stands on the rack
+    floor instead of dropping through it. Tubes are snapped+world-welded into holes, so they
+    don't physically settle against the walls."""
     hx, hy, hz = M_RACK["hx"], M_RACK["hy"], M_RACK["hz"]
     s = "".join(mesh_visual(f"{name}_{p}", f"mesh_rack_{p}", "mat_rack", cx, cy, 0.0, M_RACK["min_z"])
                 for p in M_RACK["parts"])
@@ -233,6 +236,8 @@ def reagent_rack(name, cx, cy) -> str:
                                           (0.002, hy, hx, 0), (0.002, hy, -hx, 0)]):
         s += (f'    <geom name="collide_{name}_{i}" type="box" size="{sx:.4f} {sy:.4f} {hz:.4f}" '
               f'pos="{cx + dx:.4f} {cy + dy:.4f} {hz:.4f}" rgba="0 0 0 0" group="3"/>\n')
+    s += (f'    <geom name="collide_{name}_floor" type="box" size="{hx:.4f} {hy:.4f} {RACK_FLOOR_THICK / 2:.4f}" '
+          f'pos="{cx:.4f} {cy:.4f} {RACK_FLOOR_Z - RACK_FLOOR_THICK / 2:.4f}" rgba="0 0 0 0" group="3"/>\n')
     return s
 
 
