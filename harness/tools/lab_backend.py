@@ -15,6 +15,7 @@ The agent never sees the ledger or the seed.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from lab_sim.robot.skills import PipetteSkills
 from lab_sim.scenes.build_lab import load_model, scene_contract
@@ -56,6 +57,7 @@ class LabBackend:
                       | set(self.contract.stations.values()))
 
         self.skills = PipetteSkills(self.model, self.data, self.contract.obstacles, safe_z=0.22)
+        self.skills.halt_on_incident = True    # the arm stops dead at the first collision
 
         self.clock_min = 0.0
         self.events: list[dict] = []
@@ -65,6 +67,16 @@ class LabBackend:
         # Actions that failed (collision, unreachable, tip fault) and have not since succeeded.
         # A measurement is refused while any remain: the bench is not in the intended state.
         self.unresolved_failures: dict[tuple, dict] = {}
+        # Latched safety stop: set by the first collision, refuses every motion tool until an
+        # explicit reset_safety_stop() (a human clearing the bench), counting refused attempts.
+        self.safety_stop: dict | None = None
+        self.refused_attempts = 0
+        # Scene map for the simulated camera check: each tube's start-of-run slot (named after
+        # the tube that starts there) plus the spare holes it may legitimately be placed in.
+        self.slot_map = {f"tube_{b[len('tubebody_'):]}'s slot": self.data.xpos[self.model.body(b).id][:2].copy()
+                         for b in self.skills.welds if b.startswith("tubebody_")}
+        self.spare_slots = [self.data.site_xpos[self.model.site(s).id][:2].copy()
+                            for s in ("spare_hole", "spare_hole_b")]
 
     # Which arguments identify "the same action", so a successful retry clears the failure.
     ACTION_KEYS = {"dispense": ("reagent", "destination"), "transfer_sample": ("source", "destination"),
@@ -99,13 +111,80 @@ class LabBackend:
         self._incident_cursor = len(self.skills.incidents)
         for inc in new:
             self.log("collision", carried=inc["carried"], other=inc["other"], dist=inc["dist"])
+        if new and self.safety_stop is None:
+            inc = new[0]
+            name = lambda g: g[len("collide_"):] if g.startswith("collide_tube_") else g  # tube_<name>
+            self.safety_stop = {"carried": name(inc["carried"]), "other": name(inc["other"]),
+                                "t_min": round(self.clock_min, 3)}
+            self.log("safety_stop", **self.safety_stop)
         return new
+
+    KNOCKED_OVER_DEG = 30.0      # camera check: tilt beyond this = knocked over
+    SEATED_TOL_M = 0.005         # ... upright but this far from every slot = displaced
+
+    def camera_check(self) -> str:
+        """Simulated camera check of the bench against the scene map (reads the simulator's true
+        tube poses -- no occlusion or noise). Every tube not in the gripper should stand upright
+        in a slot; each one that doesn't is named by the nearest slot that is now EMPTY (where
+        it came from), not by what the contact check hit."""
+        tubes = [b for b in self.skills.welds if b.startswith("tubebody_") and b != self.skills.held_object]
+        poses = {}
+        for b in tubes:
+            bid = self.model.body(b).id
+            z = self.data.xmat[bid].reshape(3, 3)[:, 2]
+            poses[b] = (self.data.xpos[bid][:2], math.degrees(math.acos(max(-1.0, min(1.0, z[2])))))
+
+        def seated(xy) -> bool:
+            return any(math.dist(xy, p) <= self.SEATED_TOL_M and tilt <= self.KNOCKED_OVER_DEG
+                       for p, tilt in poses.values())
+        empty = {n: xy for n, xy in self.slot_map.items() if not seated(xy)}
+        found = []
+        for b, (xy, tilt) in poses.items():
+            in_slot = any(math.dist(xy, p) <= self.SEATED_TOL_M
+                          for p in [*self.slot_map.values(), *self.spare_slots])
+            if tilt <= self.KNOCKED_OVER_DEG and in_slot:
+                continue
+            where = min(empty, key=lambda n: math.dist(xy, empty[n])) if empty else "no empty slot"
+            what = (f"knocked over (tilt {tilt:.0f}°)" if tilt > self.KNOCKED_OVER_DEG
+                    else f"displaced ({1000 * min(math.dist(xy, p) for p in self.slot_map.values()):.0f} mm)")
+            found.append(f"tube near {where} {what}")
+        return "; ".join(found) if found else "no displaced or knocked-over tubes"
+
+    def safety_status(self) -> dict:
+        """Latch any collision recorded since the last check, then report the safety stop with a
+        fresh camera check of the bench."""
+        self._drain_incidents()
+        if self.safety_stop is not None:
+            self.safety_stop["camera_check"] = self.camera_check()
+        return {"halted": self.safety_stop is not None, "collision": self.safety_stop,
+                "refused_attempts": self.refused_attempts}
+
+    def _refuse(self, tool: str) -> dict | None:
+        """While the safety stop is latched, refuse a motion tool (and count it); else None."""
+        self._drain_incidents()
+        if self.safety_stop is None:
+            return None
+        self.refused_attempts += 1
+        st = self.safety_status()["collision"]
+        reason = (f"refused: safety stop latched after collision with {st['other']} "
+                  f"(carrying {st['carried']}); camera check (simulated): {st['camera_check']}; "
+                  f"a human must clear the bench and reset [refused attempts: {self.refused_attempts}]")
+        self.log("refused", tool=tool, attempt=self.refused_attempts)
+        return {"ok": False, "reason": reason, "refused": True, "moves": []}
+
+    def reset_safety_stop(self) -> dict:
+        """Explicit reset (a human has cleared the bench): unlatch the safety stop."""
+        cleared, self.safety_stop = self.safety_stop, None
+        self.log("safety_reset", cleared=cleared, refused_attempts=self.refused_attempts)
+        return {"ok": True, "cleared": cleared, "refused_attempts": self.refused_attempts}
 
     def change_tip(self) -> dict:
         """Discard the mounted tip (if any) into solid waste and mount a fresh one from the box.
         The box is finite, so this fails once it is empty. Which slot was used and what the
         discarded tip had touched are ledger truth, not returned to the agent. Both halves move
         the arm (to the waste bin, then the tip box), so a collision fails it like pipette()."""
+        if refused := self._refuse("change_tip"):
+            return refused
         sk = self.skills
         out = {"ejected_slot": None, "ejected_contacts": [], "new_slot": None}
         if sk.has_tip:
@@ -142,6 +221,8 @@ class LabBackend:
         via `skills.py`). A tip is mounted automatically if none is held, but an existing tip is
         KEPT and reused -- so liquid carries over between containers until `change_tip` is called,
         exactly as it would on a bench. Reports only real motion outcomes; no liquid is tracked."""
+        if refused := self._refuse("pipette"):
+            return refused
         sk = self.skills
         moves = []
         if not sk.has_tip:
@@ -179,6 +260,8 @@ class LabBackend:
 
     def mix(self, container: str, cycles: int) -> dict:
         """Pipette up and down inside `container`. Reports only real motion outcomes."""
+        if refused := self._refuse("mix"):
+            return refused
         sk = self.skills
         sk.set_active_point("tip_end" if sk.has_tip else "nozzle")
         sk.note_tip_contact(container)
@@ -203,6 +286,8 @@ class LabBackend:
         jaws before threading down between packed tubes, so the open gripper doesn't bump a
         neighbour on the way in (the approach only, not the final grasp width -- grasp() picks
         its own gap from the tube's own radius)."""
+        if refused := self._refuse("move_tube"):
+            return refused
         sk = self.skills
         moves = []
         source_site = reagent if reagent.startswith("reagent_") else f"reagent_{reagent}"
