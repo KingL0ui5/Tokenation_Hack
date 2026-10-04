@@ -6,8 +6,8 @@ if stale, then uses MuJoCo's MjSpec API to load the pristine Panda, inject the I
 end-effector site, and attach the arm into the bench — so `models/franka_emika_panda/`
 is never edited and no `scenes/assets` symlink is needed.
 
-Run from the repo root:  python -m scenes.build_lab   (writes lab.xml)
-Load in code:            from scenes.build_lab import load_model; m = load_model()
+Run from the repo root:  python -m lab_sim.scenes.build_lab   (writes lab.xml)
+Load in code:            from lab_sim.scenes.build_lab import load_model; m = load_model()
 
 Site names are the contract with the robot/tool layer (well_A1, reagent_pnpp, rack_1,
 station_reader, pipette_grip, pipette_tip, tip_box, waste, ...). Edit the layout

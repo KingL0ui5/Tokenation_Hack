@@ -7,7 +7,7 @@ from bo_eval.env import get_env
 from harness.types.state import LabState
 
 
-def submit_params(task_name: str, params: dict, require_closed: bool = False) -> dict:
+def submit_params(params: dict, require_closed: bool = False) -> dict:
     lab_state = store_as(LabState)
     env = get_env(lab_state.env)
 
@@ -16,13 +16,9 @@ def submit_params(task_name: str, params: dict, require_closed: bool = False) ->
 
     except ValueError as e:
         raise ToolError(str(e))
-    
-    if require_closed:
-        if task_name not in lab_state.task_graphs:
 
-            raise ToolError(f"Task graph '{task_name}' does not exist.")
-        
-        g = lab_state.task_graphs[task_name]
+    if require_closed:
+        g = lab_state.experiment_graph
         dangling = [n for n in g.open_leaves() if g.nodes[n].params != cond]
 
         if dangling:
@@ -38,14 +34,13 @@ def submit_params(task_name: str, params: dict, require_closed: bool = False) ->
 
 @tool
 def submit():
-    async def execute(task_name: str, params: dict[str, float]) -> str:
-        """Submit the configuration you believe is optimal for a task. Ends the episode. Every other unextended experiment must first be closed with close_branch.
+    async def execute(params: dict[str, float]) -> str:
+        """Submit the configuration you believe is optimal. Ends the episode. Every other unextended experiment must first be closed with close_branch.
 
         Args:
-            task_name: Name of the task
             params: Value for every parameter.
         """
 
-        return json.dumps(submit_params(task_name, params, require_closed=True))
+        return json.dumps(submit_params(params, require_closed=True))
 
     return execute

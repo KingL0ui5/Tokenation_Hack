@@ -23,7 +23,7 @@ import mink
 import mujoco
 import numpy as np
 
-from scenes.build_lab import PIPETTE_PARTS as _PIPETTE_PARTS
+from lab_sim.scenes.build_lab import PIPETTE_PARTS as _PIPETTE_PARTS
 
 ARM = 7
 

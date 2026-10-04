@@ -23,6 +23,14 @@ def _root() -> dict[str, Node]:
     return {"root": Node(id="root")}
 
 
+# Mermaid node styling. A closed branch is ruled out; a failed measurement was taken before its
+# plan was finished and carries no reading -- both need to stand out from live experiments.
+_NODE_STYLES = {
+    "closed": "fill:#f8d7da,stroke:#c92a2a,stroke-width:2px,stroke-dasharray:4,color:#5c0b0b",
+    "failed": "fill:#fff3bf,stroke:#e8a90c,stroke-width:2px,color:#5c4405",
+}
+
+
 class ReasoningGraph(BaseModel):
     nodes: dict[str, Node] = Field(default_factory=_root)
     edges: list[Edge] = Field(default_factory=list)
@@ -30,6 +38,11 @@ class ReasoningGraph(BaseModel):
     @property
     def experiments(self) -> list[Node]:
         return [n for n in self.nodes.values() if n.params is not None]
+
+    @property
+    def measured(self) -> list[Node]:
+        """Experiments that carry a valid reading (an incomplete plan yields none)."""
+        return [n for n in self.experiments if n.valid and n.result is not None]
 
     def open_leaves(self) -> list[str]:
         """Experiment nodes that were neither extended nor closed."""
@@ -52,8 +65,9 @@ class ReasoningGraph(BaseModel):
         if n.params is None:
             return "root"
         p = ", ".join(f"{k}={v:g}" for k, v in n.params.items())
-        tag = (" (CLOSED)" if n.closed else "") + ("" if n.valid else " (INVALID: plan incomplete)")
-        return f"{n.id} [{p}] -> {'no reading' if n.result is None else f'{n.result:.4g}'}" + tag
+        r = "MEASUREMENT FAILED" if n.result is None else f"{n.result:.4g}"
+        tag = (" (CLOSED)" if n.closed else "") + ("" if n.valid else " (plan incomplete)")
+        return f"{n.id} [{p}] -> {r}" + tag
 
     def to_text(self) -> str:
         lines = [self._label(n) for n in self.nodes.values()]
@@ -73,22 +87,32 @@ class ReasoningGraph(BaseModel):
                 lines.append(f'  {n.id}(("start"))')
             else:
                 p = "<br/>".join(f"{k}={v:g}" for k, v in n.params.items())
-                tag = "" if n.valid else "<br/><i>INVALID</i>"
-                r = "no reading" if n.result is None else f"{n.result:.4g}"
+                tag = "" if n.valid else "<br/><i>plan incomplete</i>"
+                r = "MEASUREMENT FAILED" if n.result is None else f"{n.result:.4g}"
                 lines.append(f'  {n.id}["{n.id}<br/>{p}<br/><b>{r}</b>{tag}"]')
         lines += [f'  {e.source} -->|"{q(e.reasoning)}"| {e.target}' for e in self.edges]
-        closed = [n.id for n in self.nodes.values() if n.closed]
-        if closed:
-            lines.append("  classDef closed fill:#eee,stroke:#999,stroke-dasharray:4")
-            lines.append(f"  class {','.join(closed)} closed")
+        groups: dict[str, list[str]] = {"closed": [], "failed": []}
+        for n in self.nodes.values():
+            if n.closed:
+                groups["closed"].append(n.id)
+            elif not n.valid:
+                groups["failed"].append(n.id)
+        for name, ids in groups.items():
+            if ids:
+                lines.append(f"  classDef {name} {_NODE_STYLES[name]}")
+                lines.append(f"  class {','.join(ids)} {name}")
         return "\n".join(lines)
 
 
 class Plan(BaseModel):
-    """A technician checklist written by the scientist for a task. take_measurement only
-    returns a trustworthy result for that task once every step here is checked off."""
+    """One experiment, as handed to the technician: the condition the scientist chose, where it
+    belongs in the reasoning graph, and the checklist of physical steps that set it up.
+    take_measurement only returns a trustworthy reading once every step here is checked off."""
     steps: list[str] = Field(default_factory=list)
     completed: list[bool] = Field(default_factory=list)
+    params: dict[str, float] = Field(default_factory=dict)
+    parent: str = "root"
+    reasoning: str = ""
 
     @property
     def finished(self) -> bool:
@@ -103,7 +127,9 @@ class Plan(BaseModel):
             f"  [{'x' if done else ' '}] {i + 1}. {step}"
             for i, (step, done) in enumerate(zip(self.steps, self.completed))
         )
-        return f"({'FINISHED' if self.finished else 'INCOMPLETE'})\n{checklist}"
+        cond = ", ".join(f"{k}={v:g}" for k, v in self.params.items())
+        return (f"({'FINISHED' if self.finished else 'INCOMPLETE'})\n"
+                f"  condition: {cond or '(none)'} | parent: {self.parent}\n{checklist}")
 
 
 class LabState(StoreModel):
@@ -111,18 +137,8 @@ class LabState(StoreModel):
     budget: int = 0
     seed: int = 0
     experiment_graph: ReasoningGraph = Field(default_factory=ReasoningGraph)
-    task_graphs: dict[str, ReasoningGraph] = Field(default_factory=dict)
     task_plans: dict[str, Plan] = Field(default_factory=dict)
     submission: dict[str, float] | None = None
-
-    @property
-    def task_graphs_summary(self) -> str:
-        """Serializes all task graphs into a string summary for the agent prompts."""
-        summary = "\n\n".join(
-            f"Task/Skill: {task_name}\nGraph:\n{graph.to_text()}" 
-            for task_name, graph in self.task_graphs.items()
-        )
-        return summary if summary else "No manipulation tasks have been attempted yet."
 
     @property
     def task_plans_summary(self) -> str:

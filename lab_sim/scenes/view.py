@@ -13,7 +13,7 @@ from __future__ import annotations
 import mujoco
 import mujoco.viewer
 
-from scenes.build_lab import load_model
+from lab_sim.scenes.build_lab import load_model
 
 
 def main() -> None:

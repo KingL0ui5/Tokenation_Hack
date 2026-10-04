@@ -12,9 +12,10 @@ from harness.types.state import LabState
 
 
 def suggest(n: int = 1, xi: float = 0.01, avoid_closed: bool = True) -> list[dict]:
-    """GP + expected improvement over all feasible, not-yet-run conditions."""
+    """GP + expected improvement over all feasible, not-yet-run conditions. Only valid readings
+    inform the surrogate: a measurement taken on an incomplete plan carries no value."""
     lab_state = store_as(LabState)
-    env, exps = get_env(lab_state.env), lab_state.graph.experiments
+    env, exps = get_env(lab_state.env), lab_state.experiment_graph.measured
     C = env.encode(env.X)
     run_idx = [env.index(e.params) for e in exps]
     mask = np.ones(len(C), bool)

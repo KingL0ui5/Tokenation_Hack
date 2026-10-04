@@ -1,26 +1,47 @@
 from inspect_ai.tool import ToolError, tool
 from inspect_ai.util import store_as
 
+from bo_eval.env import get_env
 from harness.types.state import LabState, Plan
 
 
 @tool
 def create_plan():
-    async def execute(task_name: str, steps: list[str]) -> str:
-        """Create (or replace) the experiment plan for a task: an ordered checklist the
-        technician must complete before take_measurement will return a trustworthy result.
+    async def execute(task_name: str, steps: list[str], params: dict[str, float],
+                      parent: str = "root", reasoning: str = "") -> str:
+        """Create (or replace) the plan for one experiment: the condition to test, where it belongs
+        in the reasoning graph, and the ordered checklist the technician must complete before
+        take_measurement will return a trustworthy result.
 
         Args:
-            task_name: Name of the task or skill this plan applies to.
-            steps: Ordered list of step descriptions the technician must perform and check off.
+            task_name: Name of the task this plan applies to.
+            steps: Ordered list of physical steps the technician must perform and check off.
+            params: The condition to test -- a value for every parameter, e.g. {"ph": 3.5, ...}. Snapped to the nearest feasible condition when measured.
+            parent: Id of the graph node this experiment follows from ("root" or an experiment id like "E3").
+            reasoning: Why this experiment follows from the parent node.
         """
         if not steps:
             raise ToolError("A plan needs at least one step.")
 
         lab_state = store_as(LabState)
-        lab_state.task_plans[task_name] = Plan(steps=list(steps), completed=[False] * len(steps))
+        env, g = get_env(lab_state.env), lab_state.experiment_graph
 
-        return f"Created plan for '{task_name}' with {len(steps)} step(s)."
+        try:
+            env.index(params)
+        except ValueError as e:
+            raise ToolError(str(e))
+        if parent not in g.nodes:
+            raise ToolError(f"Unknown parent node '{parent}'.")
+        if g.nodes[parent].closed:
+            raise ToolError(f"Branch '{parent}' is closed and cannot be extended.")
+
+        lab_state.task_plans[task_name] = Plan(
+            steps=list(steps), completed=[False] * len(steps),
+            params=params, parent=parent, reasoning=reasoning,
+        )
+
+        return (f"Created plan for '{task_name}' with {len(steps)} step(s), condition "
+                f"{env.condition(env.index(params))}, following {parent}.")
 
     return execute
 
