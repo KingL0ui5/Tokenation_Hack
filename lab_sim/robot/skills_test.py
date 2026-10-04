@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import mujoco
 
-from scenes.build_lab import load_model, scene_contract
-from robot.skills import PipetteSkills
+from lab_sim.scenes.build_lab import load_model, scene_contract
+from lab_sim.robot.skills import PipetteSkills
 
 
 def main() -> int:

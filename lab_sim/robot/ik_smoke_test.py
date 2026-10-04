@@ -16,7 +16,7 @@ import mujoco
 import numpy as np
 import mink
 
-from scenes.build_lab import load_model
+from lab_sim.scenes.build_lab import load_model
 
 logging.disable(logging.WARNING)  # mink warns that the finger joints sit at their limit; harmless
 
@@ -67,7 +67,7 @@ def main() -> int:
     robot_geoms = mink.get_subtree_geom_ids(model, mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "link0"))  # ty: ignore[unresolved-attribute]
     # Fixed obstacles come from the scene contract (movable tubes/plate and the held pipette
     # are excluded there), so this never drifts from the scene.
-    from scenes.build_lab import scene_contract
+    from lab_sim.scenes.build_lab import scene_contract
     obstacle_geoms = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, g)  # ty: ignore[unresolved-attribute]
                       for g in scene_contract(model).obstacles]
     collision_limit = mink.CollisionAvoidanceLimit(

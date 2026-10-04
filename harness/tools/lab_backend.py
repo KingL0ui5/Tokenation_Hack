@@ -22,6 +22,7 @@ from lab_sim.scenes.build_lab import load_model, scene_contract
 import mujoco
 
 TIP_CHANGE_MIN = 5 / 60
+BOX_SWAP_MIN = 2.0          # fetching and seating a fresh tip box
 
 
 @dataclass
@@ -61,6 +62,27 @@ class LabBackend:
         self.ledger: list[LedgerEntry] = []
         self.incidents: list[dict] = []        # collisions, logged for later use
         self._incident_cursor = 0              # how many of skills.incidents we've drained
+        # Actions that failed (collision, unreachable, tip fault) and have not since succeeded.
+        # A measurement is refused while any remain: the bench is not in the intended state.
+        self.unresolved_failures: dict[tuple, dict] = {}
+
+    # Which arguments identify "the same action", so a successful retry clears the failure.
+    ACTION_KEYS = {"dispense": ("reagent", "destination"), "transfer_sample": ("source", "destination"),
+                   "mix": ("container",)}
+
+    def record_outcome(self, tool: str, args: dict, ok: bool, reason: str | None) -> None:
+        """Track unresolved failures. Re-running the same action successfully clears it."""
+        key = (tool,) + tuple(str(args.get(k)) for k in self.ACTION_KEYS.get(tool, ()))
+        if ok:
+            self.unresolved_failures.pop(key, None)
+        else:
+            self.unresolved_failures[key] = {"tool": tool, "args": args, "reason": reason,
+                                             "t_lab": round(self.clock_min, 3)}
+
+    def clear_failures(self) -> None:
+        """Forget unresolved failures -- used when the scientist replaces the plan, so an action
+        that can never succeed (e.g. an unreachable well) does not deadlock the run."""
+        self.unresolved_failures.clear()
 
     def log(self, kind: str, **detail) -> dict:
         ev = {"t_min": round(self.clock_min, 3), "kind": kind, **detail}
@@ -79,21 +101,48 @@ class LabBackend:
             self.log("collision", carried=inc["carried"], other=inc["other"], dist=inc["dist"])
         return new
 
-    def pipette(self, source: str, dest: str) -> dict:
-        """Aspirate from `source`, dispense into `dest`, with a fresh disposable tip (nozzle IK
-        via `skills.py`): mount a tip, enter each vessel to its fixed pipetting depth
-        (`PipetteSkills.enter_vessel`), eject the tip. Reports only real motion outcomes; no
-        liquid is tracked."""
+    def change_tip(self) -> dict:
+        """Discard the mounted tip (if any) into solid waste and mount a fresh one from the box.
+        The box is finite, so this fails once it is empty. Which slot was used and what the
+        discarded tip had touched are ledger truth, not returned to the agent."""
         sk = self.skills
-        if sk.has_tip:                       # leftover from a prior failed transfer
-            sk.eject_tip()
-        tip = sk.pick_up_tip()
-        moves = [("pick_up_tip", None, tip)]
-        if not tip.ok:                        # empty box, or a "tip not seated" fault
-            return {"ok": False, "reason": f"tip: {tip.reason}", "moves": moves,
-                    "tip_slot": None, "touched": []}
-        tip_slot = sk._cur_tip_slot
+        out = {"ejected_slot": None, "ejected_contacts": [], "new_slot": None}
+        if sk.has_tip:
+            out["ejected_slot"] = getattr(sk, "_cur_tip_slot", None)
+            out["ejected_contacts"] = list(sk.tip_contacts)
+            r = sk.eject_tip()
+            if not r.ok:
+                return {"ok": False, "reason": f"eject: {r.reason}", **out}
+        r = sk.pick_up_tip()
         self.clock_min += TIP_CHANGE_MIN
+        out["new_slot"] = getattr(sk, "_cur_tip_slot", None) if r.ok else None
+        return {"ok": r.ok, "reason": None if r.ok else r.reason, **out}
+
+    def refresh_tips(self) -> dict:
+        """Replace the spent tip box with a full one, so pipetting can continue once it runs out.
+        Costs lab time; never fails."""
+        before = self.skills.tip_status()["tips_remaining"]
+        r = self.skills.restock_tips()
+        self.clock_min += BOX_SWAP_MIN
+        after = self.skills.tip_status()
+        return {"ok": r.ok, "reason": None if r.ok else r.reason,
+                "tips_before": before, "tips_after": after["tips_remaining"]}
+
+    def pipette(self, source: str, dest: str) -> dict:
+        """Aspirate from `source`, dispense over `dest` with the mounted disposable tip (nozzle IK
+        via `skills.py`). A tip is mounted automatically if none is held, but an existing tip is
+        KEPT and reused -- so liquid carries over between containers until `change_tip` is called,
+        exactly as it would on a bench. Reports only real motion outcomes; no liquid is tracked."""
+        sk = self.skills
+        moves = []
+        if not sk.has_tip:
+            tip = sk.pick_up_tip()
+            moves.append(("pick_up_tip", None, tip))
+            self.clock_min += TIP_CHANGE_MIN
+            if not tip.ok:                    # empty box, or a "tip not seated" fault
+                return {"ok": False, "reason": f"tip: {tip.reason}", "moves": moves,
+                        "tip_slot": None, "touched": []}
+        tip_slot = getattr(sk, "_cur_tip_slot", None)
         for site in (source, dest):
             r = sk.travel_to(site, self.APPROACH_CLEAR)
             moves.append(("travel", site, r))
@@ -117,14 +166,13 @@ class LabBackend:
                 return {"ok": False, "reason": f"{site}: {r.reason}", "moves": moves,
                         "tip_slot": tip_slot, "touched": list(sk.tip_contacts)}
             sk.note_tip_contact(site)
-        touched = list(sk.tip_contacts)
-        moves.append(("eject_tip", None, sk.eject_tip()))
-        return {"ok": True, "moves": moves, "tip_slot": tip_slot, "touched": touched}
+        return {"ok": True, "moves": moves, "tip_slot": tip_slot, "touched": list(sk.tip_contacts)}
 
     def mix(self, container: str, cycles: int) -> dict:
         """Pipette up and down inside `container`. Reports only real motion outcomes."""
         sk = self.skills
-        sk.set_active_point("nozzle")
+        sk.set_active_point("tip_end" if sk.has_tip else "nozzle")
+        sk.note_tip_contact(container)
         r = sk.travel_to(container, self.APPROACH_CLEAR)
         if r.ok:
             r = sk.descend(0.05)
@@ -197,9 +245,9 @@ class LabBackend:
 _BACKENDS: dict[tuple, LabBackend] = {}
 
 
-def current_backend(**kwargs) -> LabBackend:
+def _backend_key(**kwargs) -> tuple[tuple, int | None]:
     key: tuple = ("default",)
-    seed = kwargs.pop("seed", None)
+    seed = kwargs.get("seed")
     try:
         from inspect_ai.solver._task_state import sample_state
 
@@ -210,6 +258,18 @@ def current_backend(**kwargs) -> LabBackend:
                 seed = int(state.metadata.get("seed", 0)) if state.metadata else 0
     except Exception:
         pass
+    return key, seed
+
+
+def current_backend(**kwargs) -> LabBackend:
+    key, seed = _backend_key(seed=kwargs.pop("seed", None))
     if key not in _BACKENDS:
         _BACKENDS[key] = LabBackend(seed=seed or 0, **kwargs)
     return _BACKENDS[key]
+
+
+def existing_backend() -> LabBackend | None:
+    """This sample's backend if one has already been built, else None. Never creates a lab, so
+    tools that only need to consult it don't pay for loading the MuJoCo scene."""
+    key, _ = _backend_key()
+    return _BACKENDS.get(key)

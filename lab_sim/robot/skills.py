@@ -23,7 +23,7 @@ import mink
 import mujoco
 import numpy as np
 
-from scenes.build_lab import PIPETTE_PARTS as _PIPETTE_PARTS
+from lab_sim.scenes.build_lab import PIPETTE_PARTS as _PIPETTE_PARTS
 
 ARM = 7
 
@@ -421,6 +421,18 @@ class PipetteSkills:
                 "used_slots": sorted(self.used_slots), "box_empty": remaining == 0,
                 "has_tip": self.has_tip, "tip_seated": self.tip_seated,
                 "current_tip_contacts": list(self.tip_contacts), "tips_in_bin": self.bin_tips_shown}
+
+    def restock_tips(self) -> MoveResult:
+        """Swap in a full tip box: every slot shows a tip again and all slots become available.
+        No arm motion -- the box is replaced, not loaded by the robot. A tip already on the nozzle
+        stays mounted (it came from the old box)."""
+        for gid in self.tip_geoms:
+            self.model.geom_rgba[gid][3] = 1.0
+        if self.has_tip and getattr(self, "_cur_tip_slot", None) is not None:
+            self.model.geom_rgba[self.tip_geoms[self._cur_tip_slot]][3] = 0.0   # still on the nozzle
+        refilled = len(self.used_slots)
+        self.used_slots = {self._cur_tip_slot} if self.has_tip else set()
+        return self._result(True, f"tip box restocked ({refilled} slots refilled)")
 
     def note_tip_contact(self, site: str) -> None:
         """Record that the mounted tip has touched a container (carry-over tracking)."""

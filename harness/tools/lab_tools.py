@@ -1,10 +1,12 @@
 """Lab tools: the agent's only interface to the simulated lab, driving Lok's lab_sim scene
 through `LabBackend`. Nothing in the scene has a free joint, so no container can be grasped
 or knocked over -- the only thing physically simulated is the held pipette's nozzle reaching
-named sites. There is no liquid, no volume and no instrument: a call reports only whether it
-succeeded, never a fabricated spill or reading, and never the robot/pipette's internal state
-(tilt, tracking error, joint positions) that caused a failure -- that diagnostic detail is
-recorded in the hidden ledger only, never returned to the agent.
+named sites. There is no liquid, no volume and no instrument: a call reports whether it succeeded
+and, when it failed, why (collision, unreachable, excess tilt, tracking error) -- never a
+fabricated spill or reading. Which tip was used and what it has touched stay in the hidden ledger.
+
+A failed action is remembered: `take_measurement` is refused until the same action is repeated
+successfully (or the scientist replaces the plan), so a collision cannot be quietly checked off.
 
 Usage:
     tools = lab_tools()            # one lab per Inspect sample, created on first use
@@ -23,11 +25,18 @@ from harness.tools.lab_backend import LabBackend, LedgerEntry, current_backend
 def _result(b: LabBackend, tool_name: str, args: dict, ok: bool, reason: str | None = None,
             **ledger_only) -> str:
     res = {"ok": ok, "lab_time_min": round(b.clock_min, 2)}
-    # `reason` (tilt/tracking-error/IK diagnostics) and `ledger_only` (which tip was used, which
-    # containers it touched) are hidden lab truth, not agent-visible.
-    observed = {**res, "reason": reason} if reason else dict(res)
+    # Why an action failed (collision, unreachable, excess tilt, tracking error) IS reported: the
+    # technician would see the arm fail. `ledger_only` (which tip was used, which containers it
+    # touched) remains hidden lab truth.
+    if reason:
+        res["reason"] = reason
+    observed = dict(res)
     observed.update(ledger_only)
     b.ledger.append(LedgerEntry(round(b.clock_min, 3), tool_name, intended=args, observed=observed))
+    b.record_outcome(tool_name, args, ok, reason)
+    if not ok:
+        res["must_retry"] = ("This action did not happen. Repeat it successfully before measuring, "
+                             "or ask the scientist to re-plan it; take_measurement is refused until then.")
     return json.dumps(res)
 
 
@@ -99,17 +108,48 @@ def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
         return execute
 
     @tool
+    def change_tip() -> Tool:
+        async def execute() -> str:
+            """Eject the mounted tip into solid waste and fit a fresh one from the tip box.
+
+            The pipette keeps one tip across operations, so every container that tip has entered
+            carries over into the next one until you change it. Change tips between reagents to
+            avoid cross-contamination. The box holds a finite number of tips (get_lab_state).
+            """
+            b = B()
+            r = b.change_tip()
+            return _result(b, "change_tip", {}, r["ok"], r.get("reason"),
+                           ejected_slot=r.get("ejected_slot"),
+                           ejected_contacts=r.get("ejected_contacts", []),
+                           new_slot=r.get("new_slot"))
+        return execute
+
+    @tool
+    def refresh_tips() -> Tool:
+        async def execute() -> str:
+            """Replace the spent tip box with a full one, refilling every slot.
+
+            Use this when the box runs low or empty (get_lab_state) so pipetting can continue.
+            A tip already on the pipette stays fitted. Costs lab time.
+            """
+            b = B()
+            r = b.refresh_tips()
+            return _result(b, "refresh_tips", {}, r["ok"], r.get("reason"),
+                           tips_before=r.get("tips_before"), tips_after=r.get("tips_after"))
+        return execute
+
+    @tool
     def get_lab_state() -> Tool:
         async def execute() -> str:
             """Report lab state visible to the agent: elapsed time and the disposable-tip box."""
             b = B()
             ts = b.skills.tip_status()
-            res = {"lab_time_min": round(b.clock_min, 2),
+            res = {"lab_time_min": round(b.clock_min, 2), "has_tip": ts["has_tip"],
                    "tips_remaining": ts["tips_remaining"], "box_empty": ts["box_empty"]}
             return json.dumps(res)
         return execute
 
-    return [dispense(), transfer_sample(), mix(), get_lab_state()]
+    return [dispense(), transfer_sample(), mix(), change_tip(), refresh_tips(), get_lab_state()]
 
 
 __all__ = ["lab_tools", "LabBackend", "current_backend"]

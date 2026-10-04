@@ -14,9 +14,9 @@ from pathlib import Path
 
 import mujoco
 
-from demos.grid import GridRecorder
-from scenes.build_lab import TIP_LEN, load_model, scene_contract
-from robot.skills import PipetteSkills
+from lab_sim.demos.grid import GridRecorder
+from lab_sim.scenes.build_lab import TIP_LEN, load_model, scene_contract
+from lab_sim.robot.skills import PipetteSkills
 
 logging.disable(logging.WARNING)
 

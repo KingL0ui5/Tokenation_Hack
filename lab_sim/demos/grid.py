@@ -14,7 +14,7 @@ import cv2
 import mujoco
 import numpy as np
 
-from scenes.build_lab import BENCH_CENTER
+from lab_sim.scenes.build_lab import BENCH_CENTER
 
 TILE_W, TILE_H = 640, 480        # 4:3 -- the aspect the overview camera is fitted to
 VIEWS = ("overview", "front", "side", "close-up")
