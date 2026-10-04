@@ -37,7 +37,7 @@ SAFE_Z = 0.20               # tip travel height (clears reader/incubator tops at
 PLATE_HOVER = 0.08          # hover between wells; keeps the 20 cm-wide hand above the incubator
 APPROACH_STEP = 0.025       # descend via a waypoint this far above the target
 PARK = (0.38, 0.14, 0.30)   # where the arm waits, clear of the plate_top camera
-TIP_CAPACITY_UL = 1000.0
+TIP_CAPACITY_UL = 200.0     # AutoBio tip_200ul disposable tip (50 mm long -> 200 uL)
 LAB_SECONDS_PER_MOVE = 1.5
 REAGENT_START_UL = 14_000.0   # 15 mL stock tube, ~full (reagent sources live on the racks)
 
@@ -349,9 +349,18 @@ class LabBackend:
         (IK targets the pipette nozzle). Repeats for >1 tip volume. Returns per-move tip
         positions/errors in `moves` and liquid events in `events`; never raises."""
         sk = self.skills
-        sk.set_active_point("nozzle")
-        actual_dest, delivered, events, moves = dest, 0.0, [], []
+        # Fresh disposable tip for this transfer. pick_up_tip switches the active IK point to the
+        # tip end and extends the no-collision region over the tip. An empty box is a clear result.
+        if sk.has_tip:                       # clear a tip left mounted by a prior failed transfer
+            sk.eject_tip()
+        tip = sk.pick_up_tip()
+        moves = [("pick_up_tip", None, tip)]
+        if not tip.ok:
+            return {"ok": False, "reason": f"tip box: {tip.reason}", "delivered_ul": 0.0,
+                    "box_empty": sk.tip_status()["box_empty"], "moves": moves}
         self.clock_min += 5 / 60   # tip change
+        sk.note_tip_contact(source)
+        actual_dest, delivered, events = dest, 0.0, []
         remaining = volume
         while remaining > 1e-9:
             chunk = min(remaining, TIP_CAPACITY_UL)
@@ -387,8 +396,10 @@ class LabBackend:
                     events.append(self.log("wrong_well", intended=dest, actual=landed, volume_ul=round(amount, 2)))
                 self.actual[landed].add(taken, amount, self.clock_min)
                 self._show_level(landed)
+                sk.note_tip_contact(landed)
                 actual_dest, delivered = landed, delivered + amount
             moves.append(("ascend", dest, sk.ascend()))
+        moves.append(("eject_tip", None, sk.eject_tip()))   # discard the used tip (carry-over control)
         return {"ok": True, "actual_dest": actual_dest, "delivered_ul": delivered,
                 "events": events, "moves": moves}
 

@@ -281,10 +281,15 @@ def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
                 ToolResult JSON.
             """
             b = B()
+            ts = b.skills.tip_status()
             obs = {
                 "lab_time_min": round(b.clock_min, 2),
                 "containers": {k: v.summary() for k, v in b.nominal.items() if v.volume_ul > 0},
                 "empty_wells": [w for w in b.wells if b.nominal[f"well_{w}"].volume_ul <= 0],
+                "tips": {"remaining": ts["tips_remaining"], "total": ts["tips_total"],
+                         "box_empty": ts["box_empty"], "used_slots": ts["used_slots"],
+                         "carry_over_history": [{"slot": h["slot"], "touched": h["contacts"]}
+                                                for h in b.skills.tip_history]},
                 "budget_remaining": {
                     "wells": b.budget["wells"] - len(b.wells_used),
                     "reagent_ul": {k: round(v - b.reagent_used_ul.get(k, 0.0), 1)
