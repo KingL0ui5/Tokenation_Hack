@@ -32,6 +32,10 @@ def _has_site(model, name: str) -> bool:
     return any(model.site(i).name == name for i in range(model.nsite))
 _POINTS = {"nozzle": "pipette_nozzle", "tip_end": "pipette_tip_end", "hand": "attachment_site"}
 GRIP_HALF_M = 0.00914     # finger half-opening that grips the pipette handle
+# Fixed pipetting depths (there is no liquid tracking, so no liquid-level following):
+TUBE_TIP_DEPTH = 0.03     # tip end this far below a tube's opening
+WELL_FLOOR_GAP = 0.002    # tip end this far above a well's floor
+LIFTOFF_CLEAR_M = 0.01    # a grasped object counts as lifted clear of its support this far up
 
 
 @dataclass
@@ -95,13 +99,133 @@ class PipetteSkills:
             self._world_weld(b, True)        # can't be knocked; grasp's caller frees its target,
         mujoco.mj_forward(model, self.data)  # and place() re-welds it in the new slot.
         self._init_tips()
+        self._init_incidents()
+
+    # ------------------------------------------------------- held-object incidents
+    def _init_incidents(self) -> None:
+        """Collider lookup for every graspable body, and incident-tracking state. Incident
+        checks are scoped to what the robot actually carries (held() docstring): the mounted
+        pipette/tip (always, while mounted) and a grasped tube/plate (while welded to the hand)."""
+        self._grasp_colliders = {b: self._collider_for_body(b) for b in self.welds}
+        self._grasp_collider_ids = set(self._grasp_colliders.values())
+        self._geom_names = [self.model.geom(g).name for g in range(self.model.ngeom)]
+        self.incidents: list[dict] = []          # unexpected contacts while carrying something
+        self._seen_incidents: set[tuple] = set()  # dedup key: (carried geom name, other geom name)
+        self._placing = False                    # True only during place()'s final descent
+        self._held_liftoff_exempt: set[int] = set()  # what the held object rested against at grasp,
+        self._grasp_base_z = 0.0                     # exempt only until it's lifted clear of here
+        m = self.model
+        # Static scene geoms a placed object must not pass through: everything on the world body
+        # that's visible or collidable (rack meshes are visual-only, so contacts can't see them).
+        self._static_geoms = [g for g in range(m.ngeom) if m.geom_bodyid[g] == 0
+                              and self._geom_names[g] != "floor"
+                              and (m.geom_contype[g] or m.geom_conaffinity[g] or m.geom_rgba[g][3] > 0)]
+
+    def _ray_static(self, g: int, pnt, vec=(0.0, 0.0, -1.0)) -> float:
+        """Distance along `vec` from `pnt` to static geom `g` (-1 if missed)."""
+        pnt, vec = np.asarray(pnt, float), np.asarray(vec, float)
+        if self.model.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH:
+            return mujoco.mj_rayMesh(self.model, self.data, g, pnt, vec)
+        return mujoco.mju_rayGeom(self.data.geom_xpos[g], self.data.geom_xmat[g],
+                                  self.model.geom_size[g], pnt, vec, self.model.geom_type[g])
+
+    def _seat_z(self, body: str, target_z: float) -> float:
+        """Base height for `body` seated at a slot site. Slot sites follow the tube convention
+        (the site marks where the seated tube's own opening site sits), so the seat is the site
+        minus the tube's base-to-opening-site offset. Other objects sit on the bench."""
+        if body.startswith("tubebody_"):
+            return target_z - self.model.site_pos[self.model.site("reagent_" + body[len("tubebody_"):]).id][2]
+        return 0.0
+
+    def _static_penetration(self, body: str, n_rays: int = 24) -> str | None:
+        """Name of a static geom the body's (upright cylinder) collider passes through, or None.
+        Vertical rays just inside its wall from top to base: any hit above the base means rack
+        material (a solid plate, a wall) occupies the object's footprint."""
+        coll = self._grasp_colliders[body]
+        r, half = self.model.geom_size[coll][0] * 0.97, self.model.geom_size[coll][1]
+        c = self.data.geom_xpos[coll]
+        top, bottom = c[2] + half, c[2] - half
+        pts = [(c[0], c[1])] + [(c[0] + r * np.cos(a), c[1] + r * np.sin(a))
+                                for a in np.linspace(0, 2 * np.pi, n_rays, endpoint=False)]
+        for g in self._static_geoms:
+            if np.linalg.norm(self.data.geom_xpos[g][:2] - c[:2]) > self.model.geom_rbound[g] + r:
+                continue
+            for x, y in pts:
+                d = self._ray_static(g, [x, y, top])
+                if d >= 0 and top - d > bottom + 1e-3:
+                    return self._geom_names[g]
+        return None
+
+    def _collider_for_body(self, body: str) -> int:
+        if body.startswith("tubebody_"):
+            return self.model.geom(f"collide_tube_{body[len('tubebody_'):]}").id
+        return self.model.geom(f"{body}_collision").id   # plate_collision / p1_plate_collision
+
+    def _carried_geoms(self) -> set[int]:
+        """Everything the robot is physically carrying right now."""
+        g = set()
+        if self.held:
+            g.add(self.mounted_shaft)
+            if self.has_tip:
+                g.add(self.tip_mounted_coll)
+        if self.held_object:
+            g.add(self._grasp_colliders[self.held_object])
+        return g
+
+    def _record_incidents(self) -> None:
+        """Scan real contacts for anything carried touching something it shouldn't. Expected
+        contacts are exempted: grip pads vs the object they're holding, (only during
+        place()'s final descent) the held object vs the destination structure, and (only until
+        it's lifted LIFTOFF_CLEAR_M clear) what it rested on at grasp time. A sibling
+        tube/plate is NEVER exempted, even while placing -- that's the brush-a-neighbour bug."""
+        carried = self._carried_geoms()
+        if not carried:
+            return
+        held_coll = self._grasp_colliders.get(self.held_object)
+        if self._held_liftoff_exempt and self.held_object and (
+                self.data.xpos[self.model.body(self.held_object).id][2]
+                > self._grasp_base_z + LIFTOFF_CLEAR_M):
+            self._held_liftoff_exempt = set()     # lifted clear: its old support is no longer
+                                                  # expected, touching it again is a collision
+        for i in range(self.data.ncon):
+            c = self.data.contact[i]
+            if c.dist >= -1e-4 or (c.geom1 in carried) == (c.geom2 in carried):
+                continue                                  # not penetrating, or both/neither carried
+            carried_g, other_g = (c.geom1, c.geom2) if c.geom1 in carried else (c.geom2, c.geom1)
+            other_name = self._geom_names[other_g]
+            other_body = self.model.body(self.model.geom_bodyid[other_g]).name
+            is_sibling = other_g in self._grasp_collider_ids and other_g != held_coll
+            if not is_sibling:
+                if carried_g == held_coll and other_body in ("hand", "left_finger", "right_finger"):
+                    continue                              # grip pads holding the object
+                if self._placing or other_g in self._held_liftoff_exempt:
+                    continue                              # expected contact with the slot/bench
+                                                           # it's arriving at or departing from
+            key = (self._geom_names[carried_g], other_name)
+            if key not in self._seen_incidents:
+                self._seen_incidents.add(key)
+                self.incidents.append({"carried": self._geom_names[carried_g], "other": other_name,
+                                       "dist": round(float(c.dist), 5)})
+
+    def _held_lowest_z_offset(self) -> float:
+        """How far below the active IK point the held object's actual lowest point currently
+        is. Zero for the pipette/tip (the active point already IS their lowest point); for a
+        grasped tube, the live gap between the hand (active point while carrying) and the
+        tube body's origin (its base)."""
+        if self.held_object:
+            bid = self.model.body(self.held_object).id
+            return max(0.0, self.tip()[2] - self.data.xpos[bid][2])
+        return 0.0
 
     # -------------------------------------------------------------- internals
     def _collision_limit(self) -> "mink.CollisionAvoidanceLimit":
         """Robot<->obstacle avoidance. mink filters pairs by contype/conaffinity at build time,
-        so the mounted-tip collider is only included once it's activated (pick_up_tip rebuilds)."""
+        so the mounted-tip collider is only included once it's activated (pick_up_tip rebuilds).
+        A grasped tube/plate's collider is added to the robot side while held (grasp/release
+        rebuild), so it also keeps clear of the static scene (racks, bench, stations, bins)."""
+        held = [self._grasp_colliders[self.held_object]] if getattr(self, "held_object", None) else []
         return mink.CollisionAvoidanceLimit(
-            self.model, geom_pairs=[(self._robot_geoms, self._obs_geoms)],
+            self.model, geom_pairs=[(self._robot_geoms + held, self._obs_geoms)],
             minimum_distance_from_collisions=0.005, collision_detection_distance=0.05)
 
     def _rebuild_collision_limit(self) -> None:
@@ -156,6 +280,7 @@ class PipetteSkills:
     def _step(self) -> None:
         self.data.qfrc_applied[self.arm_dof] = self.data.qfrc_bias[self.arm_dof]  # gravity feed-forward
         mujoco.mj_step(self.model, self.data)
+        self._record_incidents()
 
     def _solve(self, target):
         self.frame_task.set_target(mink.SE3.from_rotation_and_translation(
@@ -222,19 +347,28 @@ class PipetteSkills:
         target = self.data.site_xpos[self.model.site(site).id].copy()
         return self._result(True, None, target)
 
+    def _safe_z(self) -> float:
+        """Travel height for the active point such that whatever is actually held (pipette
+        with/without tip, or a grasped tube) clears the tall tubes by its own lowest point,
+        not a fixed value."""
+        return self.safe_z + self._held_lowest_z_offset()
+
     def travel_to(self, site: str, clearance: float = 0.04) -> MoveResult:
-        """Bring the active tip to `clearance` above `site`, via a safe travel height that
-        clears the tall tubes. Vertical throughout."""
+        """Bring the active tip to `clearance` above `site`, via a safe travel height (based on
+        the held object's actual lowest point) that clears the tall tubes: lift fully clear at
+        the current (x, y), THEN move sideways at that height, THEN descend vertically onto the
+        target -- never a combined diagonal move that could graze a neighbour."""
         target = self.data.site_xpos[self.model.site(site).id].copy() + np.array([0, 0, clearance])
+        safe = self._safe_z()
         tp = self.tip()
-        if tp[2] < self.safe_z - 1e-3:
-            ok, r = self._goto([tp[0], tp[1], self.safe_z], 0.25)
+        if tp[2] < safe - 1e-3:
+            ok, r = self._goto([tp[0], tp[1], safe], 0.25)
             if not ok:
-                return self._result(False, r, [tp[0], tp[1], self.safe_z])
-        ok, r = self._goto([target[0], target[1], max(self.safe_z, target[2])], 0.4)
+                return self._result(False, r, [tp[0], tp[1], safe])
+        ok, r = self._goto([target[0], target[1], safe], 0.4)   # sideways, at the safe height
         if not ok:
             return self._result(False, r, target)
-        ok, r = self._goto(target, 0.3)              # down to the hover point
+        ok, r = self._goto(target, 0.3)              # straight down to the hover point
         return self._result(ok, r, target)
 
     def descend(self, depth: float, duration: float = 0.8) -> MoveResult:
@@ -243,10 +377,31 @@ class PipetteSkills:
         ok, r = self._goto(target, duration)
         return self._result(ok, r, target)
 
+    def vessel_depth_z(self, site: str, contract) -> float:
+        """Where the tip end should go inside the vessel at `site` (a reagent tube or a well):
+        TUBE_TIP_DEPTH below a tube's opening, WELL_FLOOR_GAP above a well's floor. The floor is
+        the vessel's liquid geom (it sits on the vessel bottom); the opening is the floor plus
+        the vessel height from `contract.vessels` (scenes.build_lab.scene_contract())."""
+        g = self.model.geom(contract.liquid_geom(site)).id
+        floor = self.data.geom_xpos[g][2] - self.model.geom_size[g][1]
+        if site.startswith("reagent_"):
+            return floor + contract.vessels["tube"].height_m - TUBE_TIP_DEPTH
+        return floor + WELL_FLOOR_GAP
+
+    def enter_vessel(self, site: str, contract, duration: float = 0.8) -> MoveResult:
+        """From hovering over `site` (after travel_to), slow straight descent of the active tip
+        into the vessel to its fixed pipetting depth (vessel_depth_z)."""
+        tp = self.tip()
+        target = np.array([tp[0], tp[1], self.vessel_depth_z(site, contract)])
+        if target[2] > tp[2]:
+            return self._result(False, f"tip already below {site}'s pipetting depth", target)
+        ok, r = self._goto(target, duration)
+        return self._result(ok, r, target)
+
     def ascend(self, duration: float = 0.3) -> MoveResult:
         """Straight-up ascent of the active tip back to the safe travel height."""
         tp = self.tip()
-        target = np.array([tp[0], tp[1], self.safe_z])
+        target = np.array([tp[0], tp[1], self._safe_z()])
         ok, r = self._goto(target, duration)
         return self._result(ok, r, target)
 
@@ -447,8 +602,7 @@ class PipetteSkills:
         body = self._obj_body(obj)
         if body not in self.welds:
             return MoveResult(False, f"{obj!r} is not graspable", self.tip().round(4).tolist())
-        coll = self.model.geom(f"collide_tube_{body[len('tubebody_'):]}").id if body.startswith("tubebody_") \
-            else self.model.geom(f"{body}_collision").id
+        coll = self._collider_for_body(body)
         gap = grip_gap if grip_gap is not None else max(0.004, 2 * self.model.geom_size[coll][0] - 0.004)
         self._world_weld(body, False)                    # free it from its slot
         mujoco.mj_forward(self.model, self.data)
@@ -460,6 +614,15 @@ class PipetteSkills:
         self._set_weld_relpose(self.welds[body], body)
         self.data.eq_active[self.welds[body]] = 1
         self.held_object = body
+        # whatever it was resting against (its slot/the bench) is exempt while it lifts off, same
+        # as the destination structure is exempt while placing -- but only until it's lifted
+        # LIFTOFF_CLEAR_M clear (see _record_incidents). A SIBLING tube is never OK.
+        self._grasp_base_z = float(self.data.xpos[self.model.body(body).id][2])
+        self._held_liftoff_exempt = {
+            (c.geom2 if c.geom1 == coll else c.geom1) for c in self.data.contact[:self.data.ncon]
+            if c.dist < -1e-4 and coll in (c.geom1, c.geom2)
+            and (c.geom2 if c.geom1 == coll else c.geom1) not in self._grasp_collider_ids}
+        self._rebuild_collision_limit()        # held object now avoids the static scene too
         return self._result(True, f"grasped {body}")
 
     def release(self, obj: str | None = None) -> MoveResult:
@@ -468,6 +631,8 @@ class PipetteSkills:
             self.data.eq_active[self.welds[body]] = 0
         self.open_gripper()
         self.held_object = None
+        self._held_liftoff_exempt = set()
+        self._rebuild_collision_limit()
         return self._result(True, f"released {body}")
 
     def place(self, obj: str, target_site: str, tol: float = 0.004) -> MoveResult:
@@ -480,10 +645,15 @@ class PipetteSkills:
             return MoveResult(False, f"not holding {body}", self.tip().round(4).tolist())
         tgt = self.data.site_xpos[self.model.site(target_site).id].copy()
         bid = self.model.body(body).id
+        seat_z = self._seat_z(body, tgt[2])                      # the slot's floor (rack hole/bench)
         r = self.travel_to(target_site, clearance=0.06)
         if not r.ok:
             return r
-        r = self.descend(self.data.xpos[bid][2] - 0.02)         # lower to ~2 cm above the slot
+        self._placing = True                                    # allow touching the destination
+        try:                                                     # structure on this final descent
+            r = self.descend(self.data.xpos[bid][2] - seat_z - 0.02)   # ~2 cm above the slot floor
+        finally:
+            self._placing = False
         if not r.ok:
             return r
         err = float(np.linalg.norm(self.data.xpos[bid][:2] - tgt[:2]))
@@ -492,11 +662,13 @@ class PipetteSkills:
                               self.tip().round(4).tolist(), round(err, 4))
         # SNAP kinematically to the exact slot pose (upright, seated, zero velocity)
         qa, da = self.free_qadr[body], self.free_dofadr[body]
-        self.data.qpos[qa:qa + 3] = [tgt[0], tgt[1], 0.001]
+        self.data.qpos[qa:qa + 3] = [tgt[0], tgt[1], seat_z]
         self.data.qpos[qa + 3:qa + 7] = [1, 0, 0, 0]
         self.data.qvel[da:da + 6] = 0
         self.data.eq_active[self.welds[body]] = 0               # drop the hand weld
         self.held_object = None
+        self._held_liftoff_exempt = set()
+        self._rebuild_collision_limit()
         mujoco.mj_forward(self.model, self.data)
         self._world_weld(body, True)                            # hold it in the slot
         self.open_gripper()
@@ -505,8 +677,11 @@ class PipetteSkills:
         err2 = float(np.linalg.norm(p[:2] - tgt[:2]))
         tilt = float(np.degrees(np.arccos(np.clip(
             self.data.xmat[bid].reshape(3, 3)[:, 2] @ np.array([0, 0, 1.]), -1, 1))))
-        seated = err2 <= tol and tilt <= 2.0 and p[2] < 0.01
+        seated = err2 <= tol and tilt <= 2.0 and abs(p[2] - seat_z) < 0.002
         reason = None if seated else f"not seated: {err2 * 1000:.1f} mm off, tilt {tilt:.1f} deg, z {p[2] * 1000:.0f} mm"
+        hit = self._static_penetration(body)                    # the destination exemption hid
+        if seated and hit:                                      # descent contacts; check the result
+            seated, reason = False, f"placed {body} penetrates {hit}"
         return MoveResult(seated, reason, p.round(4).tolist(), round(err2, 4), round(tilt, 2))
 
     def break_weld(self, obj: str | None = None) -> MoveResult:
@@ -516,6 +691,8 @@ class PipetteSkills:
             self.data.eq_active[self.welds[body]] = 0
         if body == self.held_object:
             self.held_object = None
+            self._held_liftoff_exempt = set()
+            self._rebuild_collision_limit()
         return self._result(True, f"weld broken: {body}")
 
     def pick_up_pipette(self) -> MoveResult:

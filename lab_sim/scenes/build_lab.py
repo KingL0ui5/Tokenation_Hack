@@ -42,6 +42,10 @@ LAB_XML = Path(__file__).with_name("lab.xml")
 EE_SITE = dict(name="attachment_site", pos=[0, 0, 0.1034],
                quat=[0.9238795, 0, 0, 0.3826834], group=4)
 
+# ---------------------------------------------------------------------- bench / cameras
+BENCH_CENTER = (0.40, 0.00)        # bench top centre (x, y); the top surface is z=0
+BENCH_HALF = (0.55, 0.70, 0.375)   # half extents (x, y, z) of the bench box
+
 # --------------------------------------------------------------------------- plate(s)
 # Parametric: change these constants ALONE to switch plate configuration.
 #   default     : PLATE_ROWS=4,  PLATE_COLS=6,  WELL_PITCH=0.018, N_PLATES=1  (current)
@@ -90,10 +94,20 @@ REAGENTS = [
 ]
 RACK_A = (0.46, -0.20)             # front reagent rack centre
 RACK_B = (0.46, -0.33)             # back reagent rack centre
-# The 10-slot rack has small (15 mL, r~8.5 mm) holes and large (50 mL, r~15 mm) holes.
-# A 16.8 mm tube fits SNUGLY in the 15 mL holes only; these are the 6 in the middle (y=0)
-# row, at x = +/-90, +/-54, +/-18 mm from the rack centre (measured by ray-casting the mesh).
+# The rack's upper plane has small (15 mL, r=8.5 mm) and large (50 mL, r~15 mm) holes, measured
+# by ray-casting the mesh (tests/test_rack_holes.py re-measures and checks these). A 16.8 mm tube
+# fits SNUGLY in the 15 mL holes only: 3 rows (y = -36, 0, +36 mm) x 6 columns (x = +/-90,
+# +/-54, +/-18 mm) from the rack centre. The 50 mL holes sit between rows (y = +/-18 mm).
+# The lower plane is a SOLID floor (z 3..6 mm): seated tubes stand on it, not on the bench.
 RACK_15ML_HOLES_X = (-0.090, -0.054, -0.018, 0.018, 0.054, 0.090)
+RACK_15ML_ROWS_Y = (-0.036, 0.0, 0.036)
+RACK_15ML_HOLE_R = 0.0085
+RACK_FLOOR_Z = 0.006
+RACK_FLOOR_THICK = 0.003           # lower plane spans z 3..6 mm
+# The empty 15 mL hole used as each rack's spare slot (rack-relative, back row; must be one of
+# the measured holes above). Its nearest stocked neighbour is 36 mm away, the same pitch the
+# gripper already threads between in the stocked middle row.
+SPARE_HOLE = (0.018, 0.036)
 
 TIPBOX_POS = (0.30, 0.12)
 # 24-slot tip box: 6 cols x 4 rows at 8 mm pitch. Slot centres are the cells between the
@@ -131,6 +145,17 @@ GLASS = "0.90 0.95 1.00 0.25"
 def rack_slots(cx: float, cy: float) -> list[tuple[float, float]]:
     """The 6 snug 15 mL hole centres (middle row) of a rack centred at (cx, cy)."""
     return [(cx + dx, cy) for dx in RACK_15ML_HOLES_X]
+
+
+def rack_holes(cx: float, cy: float) -> list[tuple[float, float]]:
+    """All 18 measured 15 mL hole centres of a rack centred at (cx, cy)."""
+    return [(cx + dx, cy + dy) for dy in RACK_15ML_ROWS_Y for dx in RACK_15ML_HOLES_X]
+
+
+def spare_hole(cx: float, cy: float) -> tuple[float, float]:
+    """The rack's spare 15 mL hole, taken from the measured hole grid (never placed by hand)."""
+    assert SPARE_HOLE[0] in RACK_15ML_HOLES_X and SPARE_HOLE[1] in RACK_15ML_ROWS_Y, SPARE_HOLE
+    return cx + SPARE_HOLE[0], cy + SPARE_HOLE[1]
 
 
 def mesh_visual(name, mesh, material, tx, ty, base_z, min_z, cx=0.0, cy=0.0) -> str:
@@ -200,8 +225,10 @@ def reagent_tube(name, x, y, base_z, liquid_rgba) -> str:
 
 
 def reagent_rack(name, cx, cy) -> str:
-    """10-slot rack: 3 visual mesh parts + perimeter-wall colliders (open interior). Tubes are
-    snapped+world-welded into holes, so they don't physically settle against the walls."""
+    """10-slot rack: 3 visual mesh parts + perimeter-wall colliders (open interior) + a floor
+    collider matching the solid lower plane, so a tube freed from its slot stands on the rack
+    floor instead of dropping through it. Tubes are snapped+world-welded into holes, so they
+    don't physically settle against the walls."""
     hx, hy, hz = M_RACK["hx"], M_RACK["hy"], M_RACK["hz"]
     s = "".join(mesh_visual(f"{name}_{p}", f"mesh_rack_{p}", "mat_rack", cx, cy, 0.0, M_RACK["min_z"])
                 for p in M_RACK["parts"])
@@ -209,12 +236,15 @@ def reagent_rack(name, cx, cy) -> str:
                                           (0.002, hy, hx, 0), (0.002, hy, -hx, 0)]):
         s += (f'    <geom name="collide_{name}_{i}" type="box" size="{sx:.4f} {sy:.4f} {hz:.4f}" '
               f'pos="{cx + dx:.4f} {cy + dy:.4f} {hz:.4f}" rgba="0 0 0 0" group="3"/>\n')
+    s += (f'    <geom name="collide_{name}_floor" type="box" size="{hx:.4f} {hy:.4f} {RACK_FLOOR_THICK / 2:.4f}" '
+          f'pos="{cx:.4f} {cy:.4f} {RACK_FLOOR_Z - RACK_FLOOR_THICK / 2:.4f}" rgba="0 0 0 0" group="3"/>\n')
     return s
 
 
 def build() -> str:
     parts: list[str] = []
     px, py = PLATE_CENTER
+    (bx, by), (bhx, bhy, bhz) = BENCH_CENTER, BENCH_HALF
 
     # well plate(s) — parametric (rows/cols/pitch/count via constants above)
     for prefix, cx, cy in plate_layout():
@@ -225,11 +255,13 @@ def build() -> str:
     parts.append(reagent_rack("rackB", *RACK_B))
     slots = rack_slots(*RACK_A) + rack_slots(*RACK_B)
     for (name, rgba), (sx, sy) in zip(REAGENTS, slots):
-        parts.append(reagent_tube(name, sx, sy, 0.0, rgba))
-    # an empty 15 mL hole (rack A back row) to place a tube into; neighbours are >=40 mm away
-    # and the rack has no collider, so a tube seats here without hitting walls or neighbours.
-    parts.append(f'    <site name="spare_hole" pos="{RACK_A[0]:.4f} {RACK_A[1] + 0.036:.4f} 0.13" '
-                 f'size="0.004" rgba="0 1 0 0.5" group="4"/>\n')
+        parts.append(reagent_tube(name, sx, sy, RACK_FLOOR_Z, rgba))
+    # an empty measured 15 mL hole per rack to place a tube into. Like a tube's reagent_ site,
+    # the site marks where a tube seated on the rack floor has its opening site.
+    for site, rack in (("spare_hole", RACK_A), ("spare_hole_b", RACK_B)):
+        hx, hy = spare_hole(*rack)
+        parts.append(f'    <site name="{site}" pos="{hx:.4f} {hy:.4f} {RACK_FLOOR_Z + M_TUBE15["open_z"] + 0.01:.4f}" '
+                     f'size="0.004" rgba="0 1 0 0.5" group="4"/>\n')
 
     # tip box (visual mesh placed by authored origin so the slot grid aligns) + 24 tips
     tbx, tby = TIPBOX_POS
@@ -365,7 +397,7 @@ def build() -> str:
   <worldbody>
     <light pos="0.4 0 1.5" dir="0 0 -1"/>
     <geom name="floor" type="plane" size="0 0 0.05" pos="0 0 -0.75" material="lab_floor"/>
-    <geom name="bench" type="box" size="0.55 0.70 0.375" pos="0.40 0 -0.375" material="bench_top"/>
+    <geom name="bench" type="box" size="{bhx} {bhy} {bhz}" pos="{bx} {by} {-bhz}" material="bench_top"/>
 
     <camera name="front" pos="1.60 0 0.55" xyaxes="0 1 0 -0.423 0 0.906"/>
     <camera name="side" pos="0.45 -1.30 0.70" xyaxes="1 0 0 0 0.5 0.866"/>
