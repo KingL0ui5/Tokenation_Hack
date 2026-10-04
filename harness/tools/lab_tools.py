@@ -18,6 +18,7 @@ import json
 from inspect_ai.tool import Tool, ToolError, tool
 
 from harness.tools.lab_backend import LabBackend, LedgerEntry, current_backend
+from harness.tools.technician_tools import technician_tools
 
 
 def _result(b: LabBackend, tool_name: str, args: dict, ok: bool, reason: str | None = None,
@@ -140,7 +141,8 @@ def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
             return json.dumps(res)
         return execute
 
-    return [dispense(), transfer_sample(), mix(), change_tip(), refresh_tips(), get_lab_state()]
+    return [dispense(), transfer_sample(), mix(), change_tip(), refresh_tips(), get_lab_state(),
+            *technician_tools(backend)]
 
 
 __all__ = ["lab_tools", "LabBackend", "current_backend"]
