@@ -1,4 +1,4 @@
-See our demo here: https://docs.google.com/videos/d/1DoNS7-TxRDyN1gSrPa-8kNS4-aSiLtfukvEGQ5S2K7w/play?usp=sharing
+See our demo here: https://youtu.be/Czwih0A-igw
 
 # Autonomous Lab: LLM-driven experimental optimisation in a simulated wet lab
 
