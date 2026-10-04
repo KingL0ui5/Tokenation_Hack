@@ -109,6 +109,47 @@ class PipetteSkills:
         self._seen_incidents: set[tuple] = set()  # dedup key: (carried geom name, other geom name)
         self._placing = False                    # True only during place()'s final descent
         self._held_liftoff_exempt: set[int] = set()  # what the held object rested against at grasp
+        m = self.model
+        # Static scene geoms a placed object must not pass through: everything on the world body
+        # that's visible or collidable (rack meshes are visual-only, so contacts can't see them).
+        self._static_geoms = [g for g in range(m.ngeom) if m.geom_bodyid[g] == 0
+                              and self._geom_names[g] != "floor"
+                              and (m.geom_contype[g] or m.geom_conaffinity[g] or m.geom_rgba[g][3] > 0)]
+
+    def _ray_static(self, g: int, pnt, vec=(0.0, 0.0, -1.0)) -> float:
+        """Distance along `vec` from `pnt` to static geom `g` (-1 if missed)."""
+        pnt, vec = np.asarray(pnt, float), np.asarray(vec, float)
+        if self.model.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH:
+            return mujoco.mj_rayMesh(self.model, self.data, g, pnt, vec)
+        return mujoco.mju_rayGeom(self.data.geom_xpos[g], self.data.geom_xmat[g],
+                                  self.model.geom_size[g], pnt, vec, self.model.geom_type[g])
+
+    def _seat_z(self, body: str, target_z: float) -> float:
+        """Base height for `body` seated at a slot site. Slot sites follow the tube convention
+        (the site marks where the seated tube's own opening site sits), so the seat is the site
+        minus the tube's base-to-opening-site offset. Other objects sit on the bench."""
+        if body.startswith("tubebody_"):
+            return target_z - self.model.site_pos[self.model.site("reagent_" + body[len("tubebody_"):]).id][2]
+        return 0.0
+
+    def _static_penetration(self, body: str, n_rays: int = 24) -> str | None:
+        """Name of a static geom the body's (upright cylinder) collider passes through, or None.
+        Vertical rays just inside its wall from top to base: any hit above the base means rack
+        material (a solid plate, a wall) occupies the object's footprint."""
+        coll = self._grasp_colliders[body]
+        r, half = self.model.geom_size[coll][0] * 0.97, self.model.geom_size[coll][1]
+        c = self.data.geom_xpos[coll]
+        top, bottom = c[2] + half, c[2] - half
+        pts = [(c[0], c[1])] + [(c[0] + r * np.cos(a), c[1] + r * np.sin(a))
+                                for a in np.linspace(0, 2 * np.pi, n_rays, endpoint=False)]
+        for g in self._static_geoms:
+            if np.linalg.norm(self.data.geom_xpos[g][:2] - c[:2]) > self.model.geom_rbound[g] + r:
+                continue
+            for x, y in pts:
+                d = self._ray_static(g, [x, y, top])
+                if d >= 0 and top - d > bottom + 1e-3:
+                    return self._geom_names[g]
+        return None
 
     def _collider_for_body(self, body: str) -> int:
         if body.startswith("tubebody_"):
@@ -558,12 +599,13 @@ class PipetteSkills:
             return MoveResult(False, f"not holding {body}", self.tip().round(4).tolist())
         tgt = self.data.site_xpos[self.model.site(target_site).id].copy()
         bid = self.model.body(body).id
+        seat_z = self._seat_z(body, tgt[2])                      # the slot's floor (rack hole/bench)
         r = self.travel_to(target_site, clearance=0.06)
         if not r.ok:
             return r
         self._placing = True                                    # allow touching the destination
         try:                                                     # structure on this final descent
-            r = self.descend(self.data.xpos[bid][2] - 0.02)      # lower to ~2 cm above the slot
+            r = self.descend(self.data.xpos[bid][2] - seat_z - 0.02)   # ~2 cm above the slot floor
         finally:
             self._placing = False
         if not r.ok:
@@ -574,7 +616,7 @@ class PipetteSkills:
                               self.tip().round(4).tolist(), round(err, 4))
         # SNAP kinematically to the exact slot pose (upright, seated, zero velocity)
         qa, da = self.free_qadr[body], self.free_dofadr[body]
-        self.data.qpos[qa:qa + 3] = [tgt[0], tgt[1], 0.001]
+        self.data.qpos[qa:qa + 3] = [tgt[0], tgt[1], seat_z]
         self.data.qpos[qa + 3:qa + 7] = [1, 0, 0, 0]
         self.data.qvel[da:da + 6] = 0
         self.data.eq_active[self.welds[body]] = 0               # drop the hand weld
@@ -589,8 +631,11 @@ class PipetteSkills:
         err2 = float(np.linalg.norm(p[:2] - tgt[:2]))
         tilt = float(np.degrees(np.arccos(np.clip(
             self.data.xmat[bid].reshape(3, 3)[:, 2] @ np.array([0, 0, 1.]), -1, 1))))
-        seated = err2 <= tol and tilt <= 2.0 and p[2] < 0.01
+        seated = err2 <= tol and tilt <= 2.0 and abs(p[2] - seat_z) < 0.002
         reason = None if seated else f"not seated: {err2 * 1000:.1f} mm off, tilt {tilt:.1f} deg, z {p[2] * 1000:.0f} mm"
+        hit = self._static_penetration(body)                    # the destination exemption hid
+        if seated and hit:                                      # descent contacts; check the result
+            seated, reason = False, f"placed {body} penetrates {hit}"
         return MoveResult(seated, reason, p.round(4).tolist(), round(err2, 4), round(tilt, 2))
 
     def break_weld(self, obj: str | None = None) -> MoveResult:

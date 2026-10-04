@@ -28,6 +28,7 @@ OUT = "experiments/held_object_collisions.mp4"
 CAM = "racks"
 W, H, FPS = 960, 720, 30
 RENDER_EVERY = 4
+MAX_STEPS = 60_000       # hard cap on physics steps (~2 min sim) so the demo can never hang
 
 
 def main() -> int:
@@ -60,6 +61,8 @@ def main() -> int:
     counter = {"n": 0}
 
     def step_and_render():
+        if counter["n"] >= MAX_STEPS:
+            raise RuntimeError(f"step limit ({MAX_STEPS}) exceeded")
         orig_step()
         counter["n"] += 1
         if counter["n"] % RENDER_EVERY == 0:
