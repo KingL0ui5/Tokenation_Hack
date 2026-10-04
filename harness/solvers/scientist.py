@@ -18,8 +18,13 @@ def scientist_solver():
             The technician can only physically manipulate liquid with the held pipette
             (dispense, transfer_sample, mix) -- there is no instrument and no way to take an
             exact measurement of a scientific quantity at the end of a task. Plan accordingly:
-            a task is a sequence of physical manipulation steps, not an experiment that produces
-            a measured result.
+            a task is a sequence of physical manipulation steps, once the agent has completely finished
+            your steps it obtains the result by using the take_measurement tool. The result is suitably 
+            adjusted for experimental deficiencies. Steps such as cleaning the workspace, storage, 
+            environment considerations and other factors should be ignored. Human technicians will do this later.
+            
+            The technician must be able to execute the instructions you give using the *only* tools that it has available: Dispense, 
+            Transfer Sample and Mix. It should not complete instructions that are beyond its physical limitation. 
 
             CURRENT EXPERIMENT PLANS:
             {lab_state.task_plans_summary}

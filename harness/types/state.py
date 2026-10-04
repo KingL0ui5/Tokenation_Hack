@@ -53,7 +53,7 @@ class ReasoningGraph(BaseModel):
             return "root"
         p = ", ".join(f"{k}={v:g}" for k, v in n.params.items())
         tag = (" (CLOSED)" if n.closed else "") + ("" if n.valid else " (INVALID: plan incomplete)")
-        return f"{n.id} [{p}] -> {n.result:.4g}" + tag
+        return f"{n.id} [{p}] -> {'no reading' if n.result is None else f'{n.result:.4g}'}" + tag
 
     def to_text(self) -> str:
         lines = [self._label(n) for n in self.nodes.values()]
@@ -74,7 +74,8 @@ class ReasoningGraph(BaseModel):
             else:
                 p = "<br/>".join(f"{k}={v:g}" for k, v in n.params.items())
                 tag = "" if n.valid else "<br/><i>INVALID</i>"
-                lines.append(f'  {n.id}["{n.id}<br/>{p}<br/><b>{n.result:.4g}</b>{tag}"]')
+                r = "no reading" if n.result is None else f"{n.result:.4g}"
+                lines.append(f'  {n.id}["{n.id}<br/>{p}<br/><b>{r}</b>{tag}"]')
         lines += [f'  {e.source} -->|"{q(e.reasoning)}"| {e.target}' for e in self.edges]
         closed = [n.id for n in self.nodes.values() if n.closed]
         if closed:

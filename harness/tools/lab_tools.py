@@ -46,7 +46,7 @@ def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
     def dispense() -> Tool:
         async def execute(reagent: str, destination: str, volume_ul: float) -> str:
             """Pipette a reagent from its stock tube into a well (intended volume only;
-            not tracked -- there is no way to sense how much liquid ends up anywhere).
+            not tracked).
 
             Args:
                 reagent: One of the lab's reagents, e.g. "enzyme", "pnpp", "mgcl2", "water".

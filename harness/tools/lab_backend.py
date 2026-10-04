@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from lab_sim.robot.skills import PipetteSkills
+from lab_sim.scenes.build_lab import load_model, scene_contract
 
 import mujoco
 
@@ -39,8 +41,6 @@ class LabBackend:
 
     def __init__(self, seed: int = 0):
         logging.getLogger("mink").setLevel(logging.ERROR)
-        from lab_sim.robot.skills import PipetteSkills
-        from lab_sim.scenes.build_lab import load_model, scene_contract  # Lok's scene + contract
 
         self.model = load_model()
         self.contract = scene_contract(self.model)              # scene publishes its own contract
