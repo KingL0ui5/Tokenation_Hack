@@ -61,6 +61,7 @@ class LabBackend:
         self.events: list[dict] = []
         self.ledger: list[LedgerEntry] = []
         self.incidents: list[dict] = []        # collisions, logged for later use
+        self._incident_cursor = 0              # how many of skills.incidents we've drained
 
     def log(self, kind: str, **detail) -> dict:
         ev = {"t_min": round(self.clock_min, 3), "kind": kind, **detail}
@@ -68,6 +69,16 @@ class LabBackend:
         if kind == "collision":
             self.incidents.append(ev)
         return ev
+
+    def _drain_incidents(self) -> list[dict]:
+        """Pull any new held-object incidents the skill layer recorded (robot/skills.py's
+        PipetteSkills._record_incidents) since the last check, and log each as a collision
+        event -- the same ledger/incidents channel a real collision would use."""
+        new = self.skills.incidents[self._incident_cursor:]
+        self._incident_cursor = len(self.skills.incidents)
+        for inc in new:
+            self.log("collision", carried=inc["carried"], other=inc["other"], dist=inc["dist"])
+        return new
 
     def pipette(self, source: str, dest: str) -> dict:
         """Aspirate from `source`, dispense over `dest`, with a fresh disposable tip (nozzle IK
@@ -86,12 +97,22 @@ class LabBackend:
         for site in (source, dest):
             r = sk.travel_to(site, self.APPROACH_CLEAR)
             moves.append(("travel", site, r))
+            bad = self._drain_incidents()
+            if bad:
+                return {"ok": False, "reason": f"collision: {bad[0]['carried']} vs {bad[0]['other']}",
+                        "moves": moves, "tip_slot": tip_slot, "touched": list(sk.tip_contacts),
+                        "incidents": bad}
             if not r.ok:
                 return {"ok": False, "reason": f"{site}: {r.reason}", "moves": moves,
                         "tip_slot": tip_slot, "touched": list(sk.tip_contacts)}
             r = sk.descend(self.ENTER_DEPTH)
             moves.append(("descend", site, r))
             sk.ascend()
+            bad = self._drain_incidents()
+            if bad:
+                return {"ok": False, "reason": f"collision: {bad[0]['carried']} vs {bad[0]['other']}",
+                        "moves": moves, "tip_slot": tip_slot, "touched": list(sk.tip_contacts),
+                        "incidents": bad}
             if not r.ok:
                 return {"ok": False, "reason": f"{site}: {r.reason}", "moves": moves,
                         "tip_slot": tip_slot, "touched": list(sk.tip_contacts)}
@@ -113,7 +134,62 @@ class LabBackend:
             sk.descend(-0.015)
             r = sk.descend(0.015)
         sk.ascend()
+        bad = self._drain_incidents()
+        if bad:
+            return {"ok": False, "reason": f"collision: {bad[0]['carried']} vs {bad[0]['other']}",
+                    "incidents": bad}
         return {"ok": r.ok, "reason": None if r.ok else r.reason}
+
+    def move_tube(self, reagent: str, dest_site: str, grip_gap: float = 0.022) -> dict:
+        """Carry a reagent's tube by the gripper to `dest_site` (e.g. a spare rack hole). Parks
+        the pipette first if it's mounted, and re-mounts it afterward. `grip_gap` narrows the
+        jaws before threading down between packed tubes, so the open gripper doesn't bump a
+        neighbour on the way in (the approach only, not the final grasp width -- grasp() picks
+        its own gap from the tube's own radius)."""
+        sk = self.skills
+        moves = []
+        source_site = reagent if reagent.startswith("reagent_") else f"reagent_{reagent}"
+        grip_site = f"tube_grip_{reagent[len('reagent_'):] if reagent.startswith('reagent_') else reagent}"
+        was_held = sk.held
+        if was_held:
+            moves.append(("put_down_pipette", None, sk.put_down_pipette()))
+
+        def fail(reason: str) -> dict:
+            bad = self._drain_incidents()
+            return {"ok": False, "reason": reason, "moves": moves, "incidents": bad}
+
+        sk.close_gripper(grip_gap)
+        r = sk.travel_to(grip_site, clearance=0.04)
+        moves.append(("travel", grip_site, r))
+        bad = self._drain_incidents()
+        if bad:
+            return fail(f"collision: {bad[0]['carried']} vs {bad[0]['other']}")
+        if not r.ok:
+            return fail(f"{grip_site}: {r.reason}")
+        r = sk.descend(0.04)
+        moves.append(("descend", grip_site, r))
+        bad = self._drain_incidents()
+        if bad:
+            return fail(f"collision: {bad[0]['carried']} vs {bad[0]['other']}")
+        if not r.ok:
+            return fail(f"{grip_site}: {r.reason}")
+
+        g = sk.grasp(reagent)
+        moves.append(("grasp", reagent, g))
+        if not g.ok:
+            return fail(g.reason)
+
+        p = sk.place(reagent, dest_site)
+        moves.append(("place", dest_site, p))
+        bad = self._drain_incidents()
+        if bad:
+            return fail(f"collision: {bad[0]['carried']} vs {bad[0]['other']}")
+        if not p.ok:
+            return fail(f"{dest_site}: {p.reason}")
+
+        if was_held:
+            moves.append(("pick_up_pipette", None, sk.pick_up_pipette()))
+        return {"ok": True, "moves": moves, "source": source_site, "dest": dest_site}
 
 
 # Per-sample backends, so tools can be created without passing a backend (e.g. in a

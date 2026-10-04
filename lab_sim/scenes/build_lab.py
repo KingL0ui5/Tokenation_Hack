@@ -226,9 +226,11 @@ def build() -> str:
     slots = rack_slots(*RACK_A) + rack_slots(*RACK_B)
     for (name, rgba), (sx, sy) in zip(REAGENTS, slots):
         parts.append(reagent_tube(name, sx, sy, 0.0, rgba))
-    # an empty 15 mL hole (rack A back row) to place a tube into; neighbours are >=40 mm away
-    # and the rack has no collider, so a tube seats here without hitting walls or neighbours.
+    # an empty 15 mL hole (back row, each rack) to place a tube into; neighbours are >=40 mm
+    # away and the rack has no per-hole collider, so a tube seats here without hitting walls.
     parts.append(f'    <site name="spare_hole" pos="{RACK_A[0]:.4f} {RACK_A[1] + 0.036:.4f} 0.13" '
+                 f'size="0.004" rgba="0 1 0 0.5" group="4"/>\n')
+    parts.append(f'    <site name="spare_hole_b" pos="{RACK_B[0]:.4f} {RACK_B[1] + 0.036:.4f} 0.13" '
                  f'size="0.004" rgba="0 1 0 0.5" group="4"/>\n')
 
     # tip box (visual mesh placed by authored origin so the slot grid aligns) + 24 tips
