@@ -75,7 +75,8 @@ class ReasoningGraph(BaseModel):
         lines += [f'  {e.source} -->|"{q(e.reasoning)}"| {e.target}' for e in self.edges]
         closed = [n.id for n in self.nodes.values() if n.closed]
         if closed:
-            lines.append("  classDef closed fill:#eee,stroke:#999,stroke-dasharray:4")
+            lines.append("  classDef closed fill:#f8d7da,stroke:#c92a2a,stroke-width:2px,"
+                         "stroke-dasharray:4,color:#5c0b0b")
             lines.append(f"  class {','.join(closed)} closed")
         return "\n".join(lines)
 

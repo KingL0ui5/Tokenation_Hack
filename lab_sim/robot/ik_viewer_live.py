@@ -16,7 +16,7 @@ import mujoco.viewer
 import numpy as np
 import mink
 
-from scenes.build_lab import load_model
+from lab_sim.scenes.build_lab import load_model
 
 logging.disable(logging.WARNING)
 

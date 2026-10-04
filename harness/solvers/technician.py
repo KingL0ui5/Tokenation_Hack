@@ -1,11 +1,49 @@
 from inspect_ai.solver import solver, TaskState, Generate
-from inspect_ai.model import get_model, ChatMessageSystem
+from inspect_ai.model import get_model, ChatMessageSystem, ChatMessageUser
 from inspect_ai.util import store_as
 
+from harness.solvers.context import briefed, experiment_space, lab_inventory
 from harness.types.state import LabState
 from harness.tools.plan import complete_step, view_plan
 from harness.tools.lab_tools import lab_tools
 from harness.tools.take_measurement import take_measurement
+
+MARKER = "lab technician (Inner Loop: Manipulation)"
+
+
+def _briefing(lab_state: LabState) -> str:
+    return f"""
+        You are the lab technician (Inner Loop: Manipulation), one of two agents sharing this transcript.
+        The other is the scientist, who writes the plans you execute. You carry out a plan inside the lab
+        with `dispense`, `transfer_sample` and `mix` -- the arm physically holds a pipette and moves liquid
+        with it -- and then read the outcome with `take_measurement`.
+
+        {experiment_space(lab_state.env, lab_state.budget)}
+
+        {lab_inventory()}
+
+        How your turn works:
+        - Act with your tools. Do not end your turn with a question: no human is watching, and the scientist
+        only sees your messages between turns. If a step is underspecified, choose sensible values yourself
+        (any free well, any listed reagent, a volume in microlitres), say what you chose, and carry on.
+        - Work one plan at a time. Perform each step, then check it off with `complete_step`; use `view_plan`
+        to see what is left.
+        - Once every step of that plan is checked off, call `take_measurement` with the task name. You do not
+        choose the condition: it, its parent node and its reasoning come from the plan the scientist wrote.
+        Calling it before the plan is fully checked off still spends budget, but the measurement fails
+        and returns no reading.
+        - The number `take_measurement` returns is the only measurement that exists. Never infer, estimate or
+        invent a result from what you observed while pipetting, and if an action fails, say so plainly.
+    """
+
+
+def _turn(lab_state: LabState) -> str:
+    return (
+        f"TECHNICIAN'S TURN.\n\nCurrent experiment plans:\n{lab_state.task_plans_summary}\n\n"
+        "Execute the outstanding plan now, checking off each step as you finish it, and measure it "
+        "once it is complete."
+    )
+
 
 @solver
 def technician_solver():
@@ -13,39 +51,17 @@ def technician_solver():
         lab_state = store_as(LabState)
         technician_model = get_model()
 
-        prompt=f"""
-                You are the lab technician (Inner Loop: Manipulation).
-                Your job is to execute the scientist's plan inside the lab environment using
-                `dispense`, `transfer_sample` and `mix` -- the arm physically holds a pipette
-                and moves liquid with it, taking a fresh disposable tip for each dispense/
-                transfer and ejecting it afterwards. Call `get_lab_state` to check tips
-                remaining in the box. To take your *final* measurement, you must execute the
-                take_measurement tool.
+        if not briefed(state.messages, MARKER):
+            state.messages.append(ChatMessageSystem(content=_briefing(lab_state)))
+        state.messages.append(ChatMessageUser(content=_turn(lab_state)))
 
-                Current Experiment Plans (checklists the scientist expects you to follow):
-                {lab_state.task_plans_summary}
-
-                Follow a task's plan step by step and call `complete_step` as you finish each one
-                (use `view_plan` to check progress). Once every step is checked off, the task is
-                done -- You may now call `take_measurement` with the task name and the parameter
-                values you actually ran at. Calling it before the plan is fully checked off still
-                spends budget and returns an INVALID result with no reading, so finish the plan first.
-                The number it returns is the only measurement that exists: never infer, estimate or
-                invent a result from what you observed while pipetting.
-
-                If an action fails or a step cannot be completed as planned, say so plainly rather
-                than inventing a result.
-            """
-
-        state.messages.append(ChatMessageSystem(content=prompt))
-        
         messages, _ = await technician_model.generate_loop(
             state.messages,
             tools=[complete_step(), view_plan(), take_measurement(), *lab_tools()]
         )
-        
+
         state.messages.extend(messages)
 
         return state
-    
+
     return solve
