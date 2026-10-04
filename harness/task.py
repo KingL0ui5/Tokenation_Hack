@@ -5,7 +5,7 @@ from inspect_ai.util import store_as
 
 from bo_eval.env import get_env
 from harness.scorer import lab_scorer
-from harness.solvers import scientist_solver, technician_solver
+from harness.solvers import auto_technician, scientist_solver, technician_solver
 from harness.types.state import LabState
 
 @solver
@@ -22,12 +22,16 @@ def init_lab_state(budget: int = 30, env: str = "upo_abts", seed: int = 0):
     return solve
 
 @solver
-def lab_loop(max_rounds: int | None = None):
+def lab_loop(max_rounds: int | None = None, technician: str = "llm"):
     """Alternate scientist and technician until the experiment budget is spent or the scientist
     submits -- one round is one experiment, so the budget, not a fixed round count, is what limits
-    the search. `max_rounds` caps it (default: the budget) in case a round measures nothing."""
+    the search. `max_rounds` caps it (default: the budget) in case a round measures nothing.
 
-    scientist, technician = scientist_solver(), technician_solver()
+    technician="auto" swaps the manipulation agent for `auto_technician`, which executes every
+    plan perfectly without a model call -- for testing the scientist/BO loop on its own."""
+
+    scientist = scientist_solver()
+    technician = auto_technician() if technician == "auto" else technician_solver()
 
     async def solve(state: TaskState, generate: Generate) -> TaskState:
         lab_state = store_as(LabState)
@@ -55,10 +59,10 @@ def lab_loop(max_rounds: int | None = None):
 @task
 def autonomous_lab_task(env: str = "upo_abts", budget: int = 30, seed: int = 0,
                         tolerance: float = 0.0, max_rounds: int | None = None,
-                        graph_dir: str = "logs/graphs"):
+                        technician: str = "llm", graph_dir: str = "logs/graphs"):
     return Task(
         dataset=[Sample(id=env, input=get_env(env).prompt(budget), metadata={"env": env, "seed": seed})],
         setup=init_lab_state(budget, env, seed),
-        plan=[lab_loop(max_rounds)],
+        plan=[lab_loop(max_rounds, technician)],
         scorer=lab_scorer(graph_dir, tolerance),
     )
