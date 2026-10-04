@@ -10,6 +10,7 @@ the mounted tip (the backend's mix()/pipette() are not involved):
 Tip error at each aspirate/dispense is measured against the vessel axis at its pipetting depth
 (PipetteSkills.vessel_depth_z). Mix cycles between just above the well floor and the well
 opening (vessel height from scene_contract()), not mix()'s fixed 5 cm, which would hit the plate.
+Side camera; cuts to racks for the aspirate and a plate close-up for the dispense + mix.
 Travel plays fast; tip seating and every dispense play at 1x.
 
 Run from lab_sim/:  python -m demos.pipetting_workflow [--quick | --full]
@@ -50,9 +51,13 @@ def main() -> int:
         n = len(sk.incidents)
         return {"top": st["top"], "bottom": st["bottom"],
                 "corner": (f"collisions: {n}", GREEN if n == 0 else RED)}
+    well = data.site_xpos[model.site(DEST).id] - [0, 0, 0.01]
     rec = Recorder(model, data, OUT, mode, overlay=overlay, views=("side",),
                    sizes={"quick": (640, 360), "full": (1920, 1080)}, show_sites=False,
-                   target_s=TARGET_S)
+                   target_s=TARGET_S, closeup_target=lambda: well, closeup_distance=0.45)
+    # close-up on the plate for dispense + mix: from the side and front the plate is hidden
+    # behind the racks / the incubator; this angle sees the tip in the well
+    rec.cams["close-up"].azimuth, rec.cams["close-up"].elevation = 240.0, -25.0
     hold = rec.attach(sk, MAX_STEPS)
 
     def run(label, res):
@@ -95,7 +100,7 @@ def main() -> int:
 
     step(4, f"Dispense into {DEST}")
     rec.speed(FAST); run(f"travel_to({DEST})", sk.travel_to(DEST, clearance=0.04))
-    rec.speed(1)
+    rec.speed(1); rec.cut("close-up")
     run(f"enter_vessel({DEST})", sk.enter_vessel(DEST, contract))
     sk.note_tip_contact(DEST)
     placement(DEST, "dispense"); hold(3.0)
@@ -110,7 +115,7 @@ def main() -> int:
         run("mix up", sk.descend(-stroke, duration=0.4))
         run("mix down", sk.descend(stroke, duration=0.4))
     hold(1.0)
-    rec.speed(MID); run("ascend", sk.ascend())
+    rec.speed(MID); run("ascend", sk.ascend()); rec.cut("side")
 
     step(6, "Eject the tip into solid waste")
     rec.speed(FAST); run("eject_tip", sk.eject_tip())
