@@ -30,7 +30,8 @@ def _briefing(lab_state: LabState) -> str:
         to see what is left.
         - The pipette keeps one disposable tip across operations, so liquid carries over between every
         container that tip enters. Call `change_tip` between reagents to avoid cross-contamination;
-        `get_lab_state` shows whether a tip is fitted and how many are left in the box.
+        `get_lab_state` shows whether a tip is fitted and how many are left in the box; if the box
+        runs out, `refresh_tips` fits a full one so you never have to stop for want of tips.
         - Once every step of that plan is checked off, call `take_measurement` with the task name. You do not
         choose the condition: it, its parent node and its reasoning come from the plan the scientist wrote.
         Calling it before the plan is fully checked off still spends budget, but the measurement fails

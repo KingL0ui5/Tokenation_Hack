@@ -22,6 +22,7 @@ from lab_sim.scenes.build_lab import load_model, scene_contract
 import mujoco
 
 TIP_CHANGE_MIN = 5 / 60
+BOX_SWAP_MIN = 2.0          # fetching and seating a fresh tip box
 
 
 @dataclass
@@ -85,6 +86,16 @@ class LabBackend:
         self.clock_min += TIP_CHANGE_MIN
         out["new_slot"] = getattr(sk, "_cur_tip_slot", None) if r.ok else None
         return {"ok": r.ok, "reason": None if r.ok else r.reason, **out}
+
+    def refresh_tips(self) -> dict:
+        """Replace the spent tip box with a full one, so pipetting can continue once it runs out.
+        Costs lab time; never fails."""
+        before = self.skills.tip_status()["tips_remaining"]
+        r = self.skills.restock_tips()
+        self.clock_min += BOX_SWAP_MIN
+        after = self.skills.tip_status()
+        return {"ok": r.ok, "reason": None if r.ok else r.reason,
+                "tips_before": before, "tips_after": after["tips_remaining"]}
 
     def pipette(self, source: str, dest: str) -> dict:
         """Aspirate from `source`, dispense over `dest` with the mounted disposable tip (nozzle IK
