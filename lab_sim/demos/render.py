@@ -157,6 +157,24 @@ class Recorder:
         self.frames += 1
         self.render_s += time.perf_counter() - t
 
+    def attach(self, skills, max_steps: int) -> Callable[[float], None]:
+        """Record every physics step `skills` takes (wraps PipetteSkills._step), with a hard
+        step cap so a demo can never hang. Returns hold(seconds): step the sim in place."""
+        orig, n = skills._step, [0]
+
+        def step():
+            if n[0] >= max_steps:
+                raise RuntimeError(f"step limit ({max_steps}) exceeded")
+            orig()
+            n[0] += 1
+            self.step()
+        skills._step = step
+
+        def hold(seconds: float) -> None:
+            for _ in range(int(seconds / self.model.opt.timestep)):
+                step()
+        return hold
+
     def hold_frames(self, seconds: float) -> None:
         """Repeat the current frame for `seconds` of video (a title/banner card) without
         stepping the simulation."""
