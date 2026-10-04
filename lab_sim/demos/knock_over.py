@@ -5,8 +5,10 @@
      driven low, straight through it;
   3. the per-step contact check flags the collision -> the tube flashes red, the arm stops
      (PipetteSkills.halt_on_incident, 100 ms stop reaction time) and the tube topples;
-  4. the backend's latched safety stop engages; the robot retreats home;
-  5. banner: EXPERIMENT HALTED - collision with tube_enzyme. Human help requested.
+  4. the backend's latched safety stop engages; a simulated camera check compares the bench
+     with the scene map and names what it sees ("tube near tube_enzyme's slot knocked over
+     (tilt 90 deg)"); the robot retreats home;
+  5. banner: EXPERIMENT HALTED - collision with tube_enzyme + the camera check. Human help requested.
   6. the next dispense (then a mix and a tip change) are attempted and REFUSED by the backend, with the refusal
      text and the refused-attempt count on screen.
 
@@ -109,10 +111,15 @@ def main() -> int:
     st["bottom"] = [("injected fault - deterministic, for this demo", AMBER),
                     (f"{r.reason}", RED),
                     (f"safety stop latched: collision with {col['other']}", RED)]
-    hold(5.0)                                             # the tube topples at 1x
+    hold(4.0)                                             # the tube topples at 1x
     tilt = _tilt(data, model, victim_body)
     print(f"  {VICTIM} tilt after the hit: {tilt:.0f} deg")
     assert tilt > 45, "the unsecured tube should visibly topple"
+    cam = _deg(backend.safety_status()["collision"]["camera_check"])
+    print(f"  camera check: {cam}")
+    st["top"] = "Camera check (simulated): bench vs scene map"
+    st["bottom"] = st["bottom"][1:] + [(f"camera check (simulated): {cam}", AMBER)]
+    hold(3.0)
 
     # 4. retreat home ----------------------------------------------------------------------
     rec.speed(FAST)
@@ -124,7 +131,8 @@ def main() -> int:
     # 5. halt banner -----------------------------------------------------------------------
     rec.speed(1)
     st["top"] = "EXPERIMENT HALTED"
-    st["banner"] = (f"EXPERIMENT HALTED - collision with {col['other']}.\nHuman help requested.", RED)
+    st["banner"] = (f"EXPERIMENT HALTED - collision with {col['other']}.\n"
+                    f"camera check (simulated): {cam}\nHuman help requested.", RED)
     hold(5.0)
 
     # 6. next step attempted -> refused ------------------------------------------------------
@@ -136,7 +144,7 @@ def main() -> int:
         out = call()
         print(f"  {tool}: {out}")
         assert out.get("refused") and not out["ok"]
-        lines = textwrap.wrap(out["reason"], 70)
+        lines = textwrap.wrap(_deg(out["reason"]), 70)
         st["bottom"] = [(f"{tool}: REFUSED", RED)] + [(ln, WHITE) for ln in lines]
         hold(5.0)
     st["top"] = "Halted until a human clears the bench and resets the safety stop"
@@ -155,6 +163,10 @@ class _R:
 def _goto(sk, target, duration):
     """A direct, unsafe-path move (the injected fault skips travel_to's lift-clear shape)."""
     return _R(*sk._goto(np.asarray(target, float), duration))
+
+
+def _deg(text: str) -> str:
+    return text.replace("°", " deg")           # OpenCV's Hershey font has no degree sign
 
 
 def _tilt(data, model, body) -> float:
