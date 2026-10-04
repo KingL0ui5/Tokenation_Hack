@@ -81,3 +81,29 @@ def test_deliberate_collision_is_caught_and_reported(backend):
     assert bad == sk.incidents
     assert backend.incidents and backend.incidents[-1]["kind"] == "collision"
     assert backend.incidents[-1]["other"] == "collide_tube_tris"
+
+
+def test_liftoff_exemption_ends_once_lifted_clear(backend):
+    """(d) What a tube rested on at grasp time (its rack floor) is only exempt while it lifts
+    off. Once it's lifted clear, driving it back into that same floor is a real collision."""
+    sk = backend.skills
+    sk.put_down_pipette()
+    sk.close_gripper(0.022)
+    sk.travel_to("tube_grip_dea", clearance=0.04)
+    sk.descend(0.04)
+    assert sk.grasp("dea").ok
+    floor = sk.model.geom("collide_rackA_floor").id
+    assert floor in sk._held_liftoff_exempt          # it was standing on the rack floor
+    sk.ascend()
+    assert sk.incidents == []                        # lifting off the floor is expected
+    assert not sk._held_liftoff_exempt               # ...but the exemption ended with liftoff
+
+    # Deliberately push it back down through the floor (bypassing the avoidance limit, as a
+    # mis-planned motion would): this must now be caught, not silently exempted.
+    sk.limits = sk.limits[:1]
+    tp = sk.tip()
+    base_z = sk.data.xpos[sk.model.body("tubebody_dea").id][2]
+    sk._goto([tp[0], tp[1], tp[2] - base_z + 0.003], 0.8)   # tube base 3 mm into the 6 mm floor
+
+    assert any(i["carried"] == "collide_tube_dea" and i["other"] == "collide_rackA_floor"
+               for i in sk.incidents), sk.incidents

@@ -35,6 +35,7 @@ GRIP_HALF_M = 0.00914     # finger half-opening that grips the pipette handle
 # Fixed pipetting depths (there is no liquid tracking, so no liquid-level following):
 TUBE_TIP_DEPTH = 0.03     # tip end this far below a tube's opening
 WELL_FLOOR_GAP = 0.002    # tip end this far above a well's floor
+LIFTOFF_CLEAR_M = 0.01    # a grasped object counts as lifted clear of its support this far up
 
 
 @dataclass
@@ -111,7 +112,8 @@ class PipetteSkills:
         self.incidents: list[dict] = []          # unexpected contacts while carrying something
         self._seen_incidents: set[tuple] = set()  # dedup key: (carried geom name, other geom name)
         self._placing = False                    # True only during place()'s final descent
-        self._held_liftoff_exempt: set[int] = set()  # what the held object rested against at grasp
+        self._held_liftoff_exempt: set[int] = set()  # what the held object rested against at grasp,
+        self._grasp_base_z = 0.0                     # exempt only until it's lifted clear of here
         m = self.model
         # Static scene geoms a placed object must not pass through: everything on the world body
         # that's visible or collidable (rack meshes are visual-only, so contacts can't see them).
@@ -172,13 +174,19 @@ class PipetteSkills:
 
     def _record_incidents(self) -> None:
         """Scan real contacts for anything carried touching something it shouldn't. Expected
-        contacts are exempted: grip pads vs the object they're holding, and (only during
-        place()'s final descent) the held object vs the destination structure. A sibling
+        contacts are exempted: grip pads vs the object they're holding, (only during
+        place()'s final descent) the held object vs the destination structure, and (only until
+        it's lifted LIFTOFF_CLEAR_M clear) what it rested on at grasp time. A sibling
         tube/plate is NEVER exempted, even while placing -- that's the brush-a-neighbour bug."""
         carried = self._carried_geoms()
         if not carried:
             return
         held_coll = self._grasp_colliders.get(self.held_object)
+        if self._held_liftoff_exempt and self.held_object and (
+                self.data.xpos[self.model.body(self.held_object).id][2]
+                > self._grasp_base_z + LIFTOFF_CLEAR_M):
+            self._held_liftoff_exempt = set()     # lifted clear: its old support is no longer
+                                                  # expected, touching it again is a collision
         for i in range(self.data.ncon):
             c = self.data.contact[i]
             if c.dist >= -1e-4 or (c.geom1 in carried) == (c.geom2 in carried):
@@ -594,8 +602,10 @@ class PipetteSkills:
         self._set_weld_relpose(self.welds[body], body)
         self.data.eq_active[self.welds[body]] = 1
         self.held_object = body
-        # whatever it was resting against (its slot/the bench) stays exempt for this hold, same
-        # as the destination structure is exempt while placing -- only a SIBLING tube is never OK
+        # whatever it was resting against (its slot/the bench) is exempt while it lifts off, same
+        # as the destination structure is exempt while placing -- but only until it's lifted
+        # LIFTOFF_CLEAR_M clear (see _record_incidents). A SIBLING tube is never OK.
+        self._grasp_base_z = float(self.data.xpos[self.model.body(body).id][2])
         self._held_liftoff_exempt = {
             (c.geom2 if c.geom1 == coll else c.geom1) for c in self.data.contact[:self.data.ncon]
             if c.dist < -1e-4 and coll in (c.geom1, c.geom2)
