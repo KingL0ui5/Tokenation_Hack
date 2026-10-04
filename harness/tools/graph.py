@@ -1,6 +1,7 @@
 from inspect_ai.tool import ToolError, tool
 from inspect_ai.util import store_as
 
+from bo_eval.env import get_env
 from harness.types.state import Edge, LabState
 
 
@@ -39,6 +40,19 @@ def close_branch():
         g = s.experiment_graph
         if node not in g.nodes:
             raise ToolError(f"Unknown node '{node}'.")
+
+        # Closing takes out every descendant too, so on a chain-shaped graph closing an early,
+        # poor node discards the whole search -- including the best result found so far.
+        doomed = g.subtree(node)
+        incumbent = g.best(get_env(s.env).goal)
+        if incumbent is not None and incumbent.id in doomed and incumbent.id != node:
+            raise ToolError(
+                f"Closing '{node}' would also close its descendants {sorted(set(doomed) - {node})}, "
+                f"which include {incumbent.id} -- the best result so far ({incumbent.result:.4g}). "
+                f"Close only branches whose descendants are all ruled out; experiments that build on "
+                f"{incumbent.id} should hang off {incumbent.id}, not off a rejected node."
+            )
+
         closed = g.close(node, reason)
         s.experiment_graph = g
         return f"Closed: {', '.join(closed) or 'nothing (already closed)'}."

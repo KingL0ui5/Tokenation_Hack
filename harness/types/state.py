@@ -49,6 +49,22 @@ class ReasoningGraph(BaseModel):
         sources = {e.source for e in self.edges}
         return [n.id for n in self.experiments if not n.closed and n.id not in sources]
 
+    def subtree(self, node_id: str) -> list[str]:
+        """`node_id` and every node reachable from it -- i.e. what closing it would take out."""
+        out, stack = [], [node_id]
+        while stack:
+            nid = stack.pop()
+            if nid in out:
+                continue
+            out.append(nid)
+            stack += [e.target for e in self.edges if e.source == nid]
+        return out
+
+    def best(self, goal: str = "maximize") -> Node | None:
+        """The incumbent: the node holding the best valid reading so far."""
+        pick = max if goal == "maximize" else min
+        return pick(self.measured, key=lambda n: n.result) if self.measured else None
+
     def close(self, node_id: str, reason: str) -> list[str]:
         """Close a branch (Hintikka-style): the node and all its descendants."""
         closed, stack = [], [node_id]

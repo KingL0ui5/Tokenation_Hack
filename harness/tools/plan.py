@@ -8,7 +8,8 @@ from harness.types.state import LabState, Plan
 @tool
 def create_plan():
     async def execute(task_name: str, steps: list[str], params: dict[str, float],
-                      parent: str = "root", reasoning: str = "") -> str:
+                      parent: str = "root", reasoning: str = "",
+                      allow_repeat: bool = False) -> str:
         """Create (or replace) the plan for one experiment: the condition to test, where it belongs
         in the reasoning graph, and the ordered checklist the technician must complete before
         take_measurement will return a trustworthy result.
@@ -19,6 +20,7 @@ def create_plan():
             params: The condition to test -- a value for every parameter, e.g. {"ph": 3.5, ...}. Snapped to the nearest feasible condition when measured.
             parent: Id of the graph node this experiment follows from ("root" or an experiment id like "E3").
             reasoning: Why this experiment follows from the parent node.
+            allow_repeat: Set True only to deliberately replicate a condition that has already been measured.
         """
         if not steps:
             raise ToolError("A plan needs at least one step.")
@@ -27,7 +29,7 @@ def create_plan():
         env, g = get_env(lab_state.env), lab_state.experiment_graph
 
         try:
-            env.index(params)
+            cond = env.condition(env.index(params))
         except ValueError as e:
             raise ToolError(str(e))
         if parent not in g.nodes:
@@ -35,13 +37,25 @@ def create_plan():
         if g.nodes[parent].closed:
             raise ToolError(f"Branch '{parent}' is closed and cannot be extended.")
 
+        # Requested settings snap to the nearest feasible condition, so a hand-adjusted condition
+        # can land back on one already measured and silently waste budget.
+        if not allow_repeat:
+            dup = next((nd for nd in g.experiments if nd.params == cond), None)
+            if dup is not None:
+                raise ToolError(
+                    f"That condition snaps to {cond}, which {dup.id} already measured "
+                    f"(result {dup.result}). Pick a different condition -- the bayes_opt_suggest "
+                    f"params are guaranteed to be unmeasured -- or pass allow_repeat=True to "
+                    f"replicate it on purpose."
+                )
+
         lab_state.task_plans[task_name] = Plan(
             steps=list(steps), completed=[False] * len(steps),
             params=params, parent=parent, reasoning=reasoning,
         )
 
         return (f"Created plan for '{task_name}' with {len(steps)} step(s), condition "
-                f"{env.condition(env.index(params))}, following {parent}.")
+                f"{cond}, following {parent}.")
 
     return execute
 
