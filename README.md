@@ -1,3 +1,5 @@
+See our demo here: https://docs.google.com/videos/d/1DoNS7-TxRDyN1gSrPa-8kNS4-aSiLtfukvEGQ5S2K7w/play?usp=sharing
+
 # Autonomous Lab: LLM-driven experimental optimisation in a simulated wet lab
 
 Two LLM agents — a **scientist** and a **lab technician** — collaborate to find the optimal
