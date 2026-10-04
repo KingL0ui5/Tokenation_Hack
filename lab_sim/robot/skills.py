@@ -87,18 +87,48 @@ class PipetteSkills:
         self.home_qpos = model.key_qpos[0].copy()      # arm neutral, for reseeding a stuck IK solve
         self.posture = mink.PostureTask(model, cost=1e-2)
         self.posture.set_target(data.qpos.copy())
-        robot = mink.get_subtree_geom_ids(model, model.body("link0").id)
-        obs = [model.geom(n).id for n in obstacles]
-        self.limits = [mink.ConfigurationLimit(model),
-                       mink.CollisionAvoidanceLimit(model, geom_pairs=[(robot, obs)],
-                                                    minimum_distance_from_collisions=0.005,
-                                                    collision_detection_distance=0.05)]
+        self._robot_geoms = mink.get_subtree_geom_ids(model, model.body("link0").id)
+        self._obs_geoms = [model.geom(n).id for n in obstacles]
+        self.limits = [mink.ConfigurationLimit(model), self._collision_limit()]
         self._make_task()
         for b in self.worldwelds:            # hold every tube/plate rigidly in its slot so it
             self._world_weld(b, True)        # can't be knocked; grasp's caller frees its target,
         mujoco.mj_forward(model, self.data)  # and place() re-welds it in the new slot.
+        self._init_tips()
 
     # -------------------------------------------------------------- internals
+    def _collision_limit(self) -> "mink.CollisionAvoidanceLimit":
+        """Robot<->obstacle avoidance. mink filters pairs by contype/conaffinity at build time,
+        so the mounted-tip collider is only included once it's activated (pick_up_tip rebuilds)."""
+        return mink.CollisionAvoidanceLimit(
+            self.model, geom_pairs=[(self._robot_geoms, self._obs_geoms)],
+            minimum_distance_from_collisions=0.005, collision_detection_distance=0.05)
+
+    def _rebuild_collision_limit(self) -> None:
+        self.limits[1] = self._collision_limit()
+
+    def _init_tips(self) -> None:
+        """Discover the tip-box slots (tip_00.. / tip_site_00..), the bin tips, and the mounted
+        tip, and initialise tip-inventory state. Tips are tracked here in code, not in physics."""
+        m = self.model
+        geom_names = {m.geom(g).name: g for g in range(m.ngeom)}
+        site_names = {m.site(i).name for i in range(m.nsite)}
+        n = 0
+        while f"tip_{n:02d}" in geom_names and f"tip_site_{n:02d}" in site_names:
+            n += 1
+        self.tip_slots = list(range(n))                      # slot indices 0..n-1
+        self.tip_geoms = [geom_names[f"tip_{i:02d}"] for i in self.tip_slots]
+        self.tip_sites = [f"tip_site_{i:02d}" for i in self.tip_slots]
+        self.used_slots: set[int] = set()
+        self.bin_tip_geoms = [geom_names[nm] for i in range(1000)
+                              if (nm := f"bintip_{i}") in geom_names]
+        self.bin_tips_shown = 0
+        self.tip_mounted_vis = geom_names.get("tip_mounted_visual")
+        self.tip_mounted_coll = geom_names.get("tip_mounted_collision")
+        self.has_tip = False          # a seated disposable tip is on the nozzle
+        self.tip_seated = False
+        self.tip_contacts: list[str] = []     # sites the current tip has touched (reagents/wells)
+        self.tip_history: list[dict] = []     # finished tips: {"slot", "contacts", "seated"}
     def _set_site(self, site: str) -> None:
         self.active = site
         self.site_id = self.model.site(site).id
@@ -219,6 +249,80 @@ class PipetteSkills:
         target = np.array([tp[0], tp[1], self.safe_z])
         ok, r = self._goto(target, duration)
         return self._result(ok, r, target)
+
+    # --------------------------------------------------------- disposable tips
+    def _show_mounted_tip(self, visible: bool) -> None:
+        """Toggle the nozzle-mounted tip's visibility AND its collider; rebuild avoidance so the
+        tip is included in obstacle avoidance only while mounted (mink filters by contype)."""
+        self.model.geom_rgba[self.tip_mounted_vis][3] = 1.0 if visible else 0.0
+        self.model.geom_contype[self.tip_mounted_coll] = 1 if visible else 0
+        self.model.geom_conaffinity[self.tip_mounted_coll] = 1 if visible else 0
+        self._rebuild_collision_limit()
+
+    def tip_status(self) -> dict:
+        """Tip inventory for the tool layer; a clear result even when the box is empty."""
+        remaining = len(self.tip_slots) - len(self.used_slots)
+        return {"tips_remaining": remaining, "tips_total": len(self.tip_slots),
+                "used_slots": sorted(self.used_slots), "box_empty": remaining == 0,
+                "has_tip": self.has_tip, "tip_seated": self.tip_seated,
+                "current_tip_contacts": list(self.tip_contacts), "tips_in_bin": self.bin_tips_shown}
+
+    def note_tip_contact(self, site: str) -> None:
+        """Record that the mounted tip has touched a container (carry-over tracking)."""
+        if self.has_tip and site not in self.tip_contacts:
+            self.tip_contacts.append(site)
+
+    def pick_up_tip(self, seat: bool = True, press: float = 0.004) -> MoveResult:
+        """Mount the next unused tip: nozzle over the next slot, descend onto the tip top with a
+        short downward press, hide that tip in the box and show a tip on the nozzle, then switch
+        the active point to the tip end (so IK and travel height follow the whole tip) and extend
+        the no-collision region over the tip. `seat=False` injects a 'tip not seated' fault: the
+        motion happens but no tip appears and aspiration will fail. Empty box -> clear failure."""
+        if self.has_tip:
+            return MoveResult(False, "already holding a tip; eject first", self.tip().round(4).tolist())
+        nxt = next((i for i in self.tip_slots if i not in self.used_slots
+                    and self.model.geom_rgba[self.tip_geoms[i]][3] > 0), None)
+        if nxt is None:
+            return MoveResult(False, "tip box empty", self.tip().round(4).tolist())
+        self.set_active_point("nozzle")
+        r = self.travel_to(self.tip_sites[nxt], clearance=0.03)
+        if not r.ok:
+            return r
+        r = self.descend(0.03 + press)                 # onto the tip top, then a short press
+        if not r.ok:
+            return r
+        if not seat:                                   # fault: tip stays in the box, none mounts
+            self.has_tip, self.tip_seated = False, False
+            self.ascend()
+            return MoveResult(False, f"tip not seated (fault) at slot {nxt}", self.tip().round(4).tolist())
+        self.used_slots.add(nxt)
+        self.model.geom_rgba[self.tip_geoms[nxt]][3] = 0.0   # the picked tip leaves the box
+        self._show_mounted_tip(True)
+        self.has_tip, self.tip_seated, self.tip_contacts = True, True, []
+        self._cur_tip_slot = nxt
+        self.set_active_point("tip_end")               # IK + travel height now follow the tip end
+        self.ascend()
+        return self._result(True, f"tip mounted from slot {nxt}")
+
+    def eject_tip(self) -> MoveResult:
+        """Discard the mounted tip into the solid-waste bin: travel over it, hide the mounted tip
+        (and its collider), reveal one pre-placed tip in the bin, switch the active point back to
+        the nozzle. Records the tip's contact history for carry-over tracking."""
+        if not self.has_tip:
+            return MoveResult(False, "no tip mounted", self.tip().round(4).tolist())
+        r = self.travel_to("waste_solid", clearance=0.06)
+        if not r.ok:
+            return r
+        self._show_mounted_tip(False)
+        if self.bin_tips_shown < len(self.bin_tip_geoms):
+            self.model.geom_rgba[self.bin_tip_geoms[self.bin_tips_shown]][3] = 1.0
+            self.bin_tips_shown += 1
+        self.tip_history.append({"slot": getattr(self, "_cur_tip_slot", None),
+                                 "contacts": list(self.tip_contacts), "seated": True})
+        self.has_tip, self.tip_seated, self.tip_contacts = False, False, []
+        self.set_active_point("nozzle")
+        self.ascend()
+        return self._result(True, "tip ejected into solid waste")
 
     # --------------------------------------------------------------- gripper
     def open_gripper(self) -> MoveResult:

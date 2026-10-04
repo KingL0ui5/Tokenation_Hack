@@ -17,7 +17,9 @@ def technician_solver():
                 You are the lab technician (Inner Loop: Manipulation).
                 Your job is to execute the scientist's plan inside the lab environment using
                 `dispense`, `transfer_sample` and `mix` -- the arm physically holds a pipette
-                and moves liquid with it. To take your *final* measurement, you must execute the 
+                and moves liquid with it, taking a fresh disposable tip for each dispense/
+                transfer and ejecting it afterwards. Call `get_lab_state` to check tips
+                remaining in the box. To take your *final* measurement, you must execute the
                 take_measurement tool.
 
                 Current Experiment Plans (checklists the scientist expects you to follow):
