@@ -11,8 +11,12 @@ Run from `lab_sim/`:
 
 - Reach test:  `cd lab_sim && uv run python -m robot.ik_smoke_test`
 - Skills test: `cd lab_sim && uv run python -m robot.skills_test`
+- Demos/videos: `cd lab_sim && uv run python -m demos.tips` (e.g. -> `experiments/tips.mp4`)
 - Viewer (macOS GUI needs mjpython): `mjpython -m scenes.view` (static) or
   `mjpython -m robot.ik_viewer_live` (IK tour)
+
+Demo/video scripts live in `lab_sim/demos/` and are always committed; run them from `lab_sim/`,
+never from /tmp. Videos (`lab_sim/experiments/*.mp4`) are gitignored — regenerate from the script.
 
 ## Repo layout
 
@@ -51,10 +55,17 @@ Run from `lab_sim/`:
 - `ascend()` uses a stepped IK solve (reseeds from home if a solve stalls).
 - Weld contract: tubes start welded in their slots; `grasp()` frees its target's world weld
   itself; `place()` snaps the object to its slot and re-welds it.
+- Disposable tips (on `feat/pipette-tips`, branched off `feat/gripper-control`): AutoBio 200 uL
+  tip mesh (50 mm) in all 24 box slots, each with a top site. `pick_up_tip()`/`eject_tip()`
+  switch the active point to `pipette_tip_end` (travel height then follows the whole tip) and
+  rebuild the no-collision region over the tip; the mounted tip is excluded from vessel contacts
+  ONLY (so it can enter tubes/wells) while still avoided vs bench/racks. Tip inventory +
+  per-tip carry-over tracking live in the skill; `pick_up_tip(seat=False)` is the "tip not
+  seated" fault hook. Backend tip capacity is 200 uL; `pipette()` takes a fresh tip per transfer
+  and ejects it. Demo: `demos/tips.py`.
 
 ## Next tasks
 
-1. Tips (attach/eject; active point switches to tip end, no-collision over the whole tip).
-2. Held-object collisions (the carried tube/tip vs the scene). Note: the carry path
+1. Held-object collisions (the carried tube/tip vs the scene). Note: the carry path
    currently brushes neighbouring tubes (startup welds hide it); catch and fix it here.
-3. Pipetting depth (how far the tip descends into a vessel).
+2. Pipetting depth (how far the tip descends into a vessel).
