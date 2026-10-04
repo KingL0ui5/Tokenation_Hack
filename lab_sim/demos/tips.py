@@ -25,6 +25,7 @@ OUT = "experiments/tips.mp4"
 CAM = "front"
 W, H, FPS = 960, 720, 30
 RENDER_EVERY = 4
+MAX_STEPS = 40_000       # hard cap on physics steps so the demo can never hang
 
 
 def main() -> int:
@@ -61,6 +62,8 @@ def main() -> int:
     counter = {"n": 0}
 
     def step_and_render():
+        if counter["n"] >= MAX_STEPS:
+            raise RuntimeError(f"step limit ({MAX_STEPS}) exceeded")
         orig_step()
         counter["n"] += 1
         if counter["n"] % RENDER_EVERY == 0:
@@ -83,14 +86,14 @@ def main() -> int:
 
     label["text"] = "aspirate: reagent_water"
     show("travel_to(reagent_water)", sk.travel_to("reagent_water", clearance=0.04))
-    show("descend(0.055) into tube", sk.descend(0.055))
+    show("enter_vessel(reagent_water)", sk.enter_vessel("reagent_water", contract))
     sk.note_tip_contact("reagent_water")
     hold(0.3)
     show("ascend", sk.ascend())
 
     label["text"] = "dispense: well_B3"
     show("travel_to(well_B3)", sk.travel_to("well_B3", clearance=0.04))
-    show("descend(0.045) into well", sk.descend(0.045))
+    show("enter_vessel(well_B3)", sk.enter_vessel("well_B3", contract))
     sk.note_tip_contact("well_B3")
     hold(0.3)
     show("ascend", sk.ascend())

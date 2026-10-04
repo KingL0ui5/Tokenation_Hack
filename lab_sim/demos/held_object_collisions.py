@@ -3,7 +3,7 @@
 Three scenes, matching the acceptance tests in tests/test_held_object_collisions.py:
   (a) carry a tube from rack A to the spare hole in rack B -- zero incidents.
   (b) the mounted pipette, with a disposable tip, travelling between rack A, rack B and a
-      well -- zero incidents.
+      well, entering each vessel to its pipetting depth -- zero incidents.
   (c) a deliberate collision: the same carried tube driven sideways through a neighbour's
       slot (skipping the safe lift) -- caught and reported via PipetteSkills.incidents, the
       same channel harness/tools/lab_backend.py drains to fail a tool.
@@ -94,11 +94,12 @@ def main() -> int:
     assert sk.incidents == [], "carry should be clean"
 
     # ---- (b) pipette + tip travelling between racks -------------------------------------
-    label["text"] = "(b) pipette+tip travelling: rack A -> rack B -> well"
+    label["text"] = "(b) pipette+tip entering: rack A -> rack B -> well"
     show("pick_up_tip", sk.pick_up_tip()); hold(0.2)
-    show("travel_to(reagent_tris)  [rack A]", sk.travel_to("reagent_tris", clearance=0.04))
-    show("travel_to(reagent_zncl2) [rack B]", sk.travel_to("reagent_zncl2", clearance=0.04))
-    show("travel_to(well_A1)       [plate]", sk.travel_to("well_A1", clearance=0.04))
+    for site, where in (("reagent_tris", "rack A"), ("reagent_zncl2", "rack B"), ("well_A1", "plate")):
+        show(f"travel_to({site}) [{where}]", sk.travel_to(site, clearance=0.04))
+        show(f"enter_vessel({site})", sk.enter_vessel(site, contract)); hold(0.3)
+        show("ascend", sk.ascend())
     show("eject_tip", sk.eject_tip()); hold(0.3)
     print(f"  incidents after (b): {sk.incidents}")
     assert sk.incidents == [], "tip travel should be clean"

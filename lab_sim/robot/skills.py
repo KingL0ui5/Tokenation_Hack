@@ -32,6 +32,9 @@ def _has_site(model, name: str) -> bool:
     return any(model.site(i).name == name for i in range(model.nsite))
 _POINTS = {"nozzle": "pipette_nozzle", "tip_end": "pipette_tip_end", "hand": "attachment_site"}
 GRIP_HALF_M = 0.00914     # finger half-opening that grips the pipette handle
+# Fixed pipetting depths (there is no liquid tracking, so no liquid-level following):
+TUBE_TIP_DEPTH = 0.03     # tip end this far below a tube's opening
+WELL_FLOOR_GAP = 0.002    # tip end this far above a well's floor
 
 
 @dataclass
@@ -363,6 +366,27 @@ class PipetteSkills:
     def descend(self, depth: float, duration: float = 0.8) -> MoveResult:
         """Slow straight-down descent of the active tip by `depth` metres."""
         target = self.tip() - np.array([0, 0, depth])
+        ok, r = self._goto(target, duration)
+        return self._result(ok, r, target)
+
+    def vessel_depth_z(self, site: str, contract) -> float:
+        """Where the tip end should go inside the vessel at `site` (a reagent tube or a well):
+        TUBE_TIP_DEPTH below a tube's opening, WELL_FLOOR_GAP above a well's floor. The floor is
+        the vessel's liquid geom (it sits on the vessel bottom); the opening is the floor plus
+        the vessel height from `contract.vessels` (scenes.build_lab.scene_contract())."""
+        g = self.model.geom(contract.liquid_geom(site)).id
+        floor = self.data.geom_xpos[g][2] - self.model.geom_size[g][1]
+        if site.startswith("reagent_"):
+            return floor + contract.vessels["tube"].height_m - TUBE_TIP_DEPTH
+        return floor + WELL_FLOOR_GAP
+
+    def enter_vessel(self, site: str, contract, duration: float = 0.8) -> MoveResult:
+        """From hovering over `site` (after travel_to), slow straight descent of the active tip
+        into the vessel to its fixed pipetting depth (vessel_depth_z)."""
+        tp = self.tip()
+        target = np.array([tp[0], tp[1], self.vessel_depth_z(site, contract)])
+        if target[2] > tp[2]:
+            return self._result(False, f"tip already below {site}'s pipetting depth", target)
         ok, r = self._goto(target, duration)
         return self._result(ok, r, target)
 

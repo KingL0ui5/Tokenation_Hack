@@ -37,7 +37,6 @@ class LabBackend:
     """One simulated lab session. Create one per sample."""
 
     APPROACH_CLEAR = 0.04      # hover this far above an opening before descending
-    ENTER_DEPTH = 0.055        # slow vertical descent, nozzle enters the opening
 
     def __init__(self, seed: int = 0):
         logging.getLogger("mink").setLevel(logging.ERROR)
@@ -81,9 +80,10 @@ class LabBackend:
         return new
 
     def pipette(self, source: str, dest: str) -> dict:
-        """Aspirate from `source`, dispense over `dest`, with a fresh disposable tip (nozzle IK
-        via `skills.py`): mount a tip, visit both sites, eject the tip. Reports only real motion
-        outcomes; no liquid is tracked."""
+        """Aspirate from `source`, dispense into `dest`, with a fresh disposable tip (nozzle IK
+        via `skills.py`): mount a tip, enter each vessel to its fixed pipetting depth
+        (`PipetteSkills.enter_vessel`), eject the tip. Reports only real motion outcomes; no
+        liquid is tracked."""
         sk = self.skills
         if sk.has_tip:                       # leftover from a prior failed transfer
             sk.eject_tip()
@@ -105,7 +105,7 @@ class LabBackend:
             if not r.ok:
                 return {"ok": False, "reason": f"{site}: {r.reason}", "moves": moves,
                         "tip_slot": tip_slot, "touched": list(sk.tip_contacts)}
-            r = sk.descend(self.ENTER_DEPTH)
+            r = sk.enter_vessel(site, self.contract)
             moves.append(("descend", site, r))
             sk.ascend()
             bad = self._drain_incidents()
