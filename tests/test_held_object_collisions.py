@@ -101,6 +101,7 @@ def test_liftoff_exemption_ends_once_lifted_clear(backend):
     # Deliberately push it back down through the floor (bypassing the avoidance limit, as a
     # mis-planned motion would): this must now be caught, not silently exempted.
     sk.limits = sk.limits[:1]
+    sk.halt_on_incident = False                      # record every contact, don't stop at the first
     tp = sk.tip()
     base_z = sk.data.xpos[sk.model.body("tubebody_dea").id][2]
     sk._goto([tp[0], tp[1], tp[2] - base_z + 0.003], 0.8)   # tube base 3 mm into the 6 mm floor

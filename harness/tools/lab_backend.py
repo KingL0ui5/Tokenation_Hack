@@ -56,6 +56,7 @@ class LabBackend:
                       | set(self.contract.stations.values()))
 
         self.skills = PipetteSkills(self.model, self.data, self.contract.obstacles, safe_z=0.22)
+        self.skills.halt_on_incident = True    # the arm stops dead at the first collision
 
         self.clock_min = 0.0
         self.events: list[dict] = []
@@ -65,6 +66,10 @@ class LabBackend:
         # Actions that failed (collision, unreachable, tip fault) and have not since succeeded.
         # A measurement is refused while any remain: the bench is not in the intended state.
         self.unresolved_failures: dict[tuple, dict] = {}
+        # Latched safety stop: set by the first collision, refuses every motion tool until an
+        # explicit reset_safety_stop() (a human clearing the bench), counting refused attempts.
+        self.safety_stop: dict | None = None
+        self.refused_attempts = 0
 
     # Which arguments identify "the same action", so a successful retry clears the failure.
     ACTION_KEYS = {"dispense": ("reagent", "destination"), "transfer_sample": ("source", "destination"),
@@ -99,12 +104,45 @@ class LabBackend:
         self._incident_cursor = len(self.skills.incidents)
         for inc in new:
             self.log("collision", carried=inc["carried"], other=inc["other"], dist=inc["dist"])
+        if new and self.safety_stop is None:
+            inc = new[0]
+            name = lambda g: g[len("collide_"):] if g.startswith("collide_tube_") else g  # tube_<name>
+            self.safety_stop = {"carried": name(inc["carried"]), "other": name(inc["other"]),
+                                "t_min": round(self.clock_min, 3)}
+            self.log("safety_stop", **self.safety_stop)
         return new
+
+    def safety_status(self) -> dict:
+        """Latch any collision recorded since the last check, then report the safety stop."""
+        self._drain_incidents()
+        return {"halted": self.safety_stop is not None, "collision": self.safety_stop,
+                "refused_attempts": self.refused_attempts}
+
+    def _refuse(self, tool: str) -> dict | None:
+        """While the safety stop is latched, refuse a motion tool (and count it); else None."""
+        self._drain_incidents()
+        if self.safety_stop is None:
+            return None
+        self.refused_attempts += 1
+        st = self.safety_stop
+        reason = (f"refused: safety stop latched after collision with {st['other']} "
+                  f"(carrying {st['carried']}); a human must clear the bench and reset "
+                  f"[refused attempts: {self.refused_attempts}]")
+        self.log("refused", tool=tool, attempt=self.refused_attempts)
+        return {"ok": False, "reason": reason, "refused": True, "moves": []}
+
+    def reset_safety_stop(self) -> dict:
+        """Explicit reset (a human has cleared the bench): unlatch the safety stop."""
+        cleared, self.safety_stop = self.safety_stop, None
+        self.log("safety_reset", cleared=cleared, refused_attempts=self.refused_attempts)
+        return {"ok": True, "cleared": cleared, "refused_attempts": self.refused_attempts}
 
     def change_tip(self) -> dict:
         """Discard the mounted tip (if any) into solid waste and mount a fresh one from the box.
         The box is finite, so this fails once it is empty. Which slot was used and what the
         discarded tip had touched are ledger truth, not returned to the agent."""
+        if refused := self._refuse("change_tip"):
+            return refused
         sk = self.skills
         out = {"ejected_slot": None, "ejected_contacts": [], "new_slot": None}
         if sk.has_tip:
@@ -133,6 +171,8 @@ class LabBackend:
         via `skills.py`). A tip is mounted automatically if none is held, but an existing tip is
         KEPT and reused -- so liquid carries over between containers until `change_tip` is called,
         exactly as it would on a bench. Reports only real motion outcomes; no liquid is tracked."""
+        if refused := self._refuse("pipette"):
+            return refused
         sk = self.skills
         moves = []
         if not sk.has_tip:
@@ -170,6 +210,8 @@ class LabBackend:
 
     def mix(self, container: str, cycles: int) -> dict:
         """Pipette up and down inside `container`. Reports only real motion outcomes."""
+        if refused := self._refuse("mix"):
+            return refused
         sk = self.skills
         sk.set_active_point("tip_end" if sk.has_tip else "nozzle")
         sk.note_tip_contact(container)
@@ -194,6 +236,8 @@ class LabBackend:
         jaws before threading down between packed tubes, so the open gripper doesn't bump a
         neighbour on the way in (the approach only, not the final grasp width -- grasp() picks
         its own gap from the tube's own radius)."""
+        if refused := self._refuse("move_tube"):
+            return refused
         sk = self.skills
         moves = []
         source_site = reagent if reagent.startswith("reagent_") else f"reagent_{reagent}"

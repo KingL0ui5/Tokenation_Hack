@@ -112,6 +112,8 @@ class PipetteSkills:
         self.incidents: list[dict] = []          # unexpected contacts while carrying something
         self._seen_incidents: set[tuple] = set()  # dedup key: (carried geom name, other geom name)
         self._placing = False                    # True only during place()'s final descent
+        self.halt_on_incident = False            # True -> any move stops dead at a new incident
+        self.halt_latency_s = 0.0                # stop reaction time after detection (deterministic)
         self._held_liftoff_exempt: set[int] = set()  # what the held object rested against at grasp,
         self._grasp_base_z = 0.0                     # exempt only until it's lifted clear of here
         m = self.model
@@ -322,15 +324,34 @@ class PipetteSkills:
         dt = self.model.opt.timestep
         q0 = self.data.ctrl[self.arm_act].copy()
         n = max(1, int(duration / dt))
+        n_inc, hit_t = len(self.incidents), None
+
+        def halted() -> bool:                         # stop `halt_latency_s` after a new incident
+            nonlocal hit_t
+            if not self.halt_on_incident or len(self.incidents) == n_inc:
+                return False
+            hit_t = self.data.time if hit_t is None else hit_t
+            return self.data.time - hit_t >= self.halt_latency_s - 1e-9
         for k in range(n):
             s = (k + 1) / n
             self.data.ctrl[self.arm_act] = q0 + (3 * s**2 - 2 * s**3) * (q - q0)
             self._step()
+            if halted():
+                return False, self._halt()
         for k in range(int(0.6 / dt)):               # settle
             self._step()
+            if halted():
+                return False, self._halt()
             if k * dt > 0.05 and np.abs(self.data.qvel[self.arm_dof]).max() < 2e-3:
                 break
         return True, None
+
+    def _halt(self) -> str:
+        """Emergency stop on a new incident: hold the arm where it is (servo targets = current
+        joint angles) and report what was hit."""
+        self.data.ctrl[self.arm_act] = self.data.qpos[self.arm_qadr]
+        inc = self.incidents[-1]
+        return f"stopped: collision {inc['carried']} vs {inc['other']}"
 
     # ---------------------------------------------------------------- skills
     def set_active_point(self, name: str) -> MoveResult:
