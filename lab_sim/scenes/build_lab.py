@@ -146,15 +146,20 @@ def plate(prefix, cx, cy) -> str:
     <prefix>well_<row><col>. prefix is "" for a single plate, "p1_"/"p2_" for several."""
     rows = string.ascii_uppercase[:PLATE_ROWS]
     pw, pd, base_h = PLATE_COLS * WELL_PITCH + 0.01, PLATE_ROWS * WELL_PITCH + 0.01, 0.004
-    s = (f'    <geom name="{prefix}plate_base" type="box" size="{pw / 2:.4f} {pd / 2:.4f} {base_h / 2:.4f}" '
-         f'pos="{cx:.4f} {cy:.4f} {base_h / 2:.4f}" rgba="0.95 0.95 0.95 1"/>\n'
-         f'    <geom name="{prefix}plate_collision" type="box" size="{pw / 2:.4f} {pd / 2:.4f} {WELL_H / 2:.4f}" '
-         f'pos="{cx:.4f} {cy:.4f} {base_h + WELL_H / 2:.4f}" rgba="0 0 0 0" group="3"/>\n')
+    # FREE body: the plate can be moved/knocked. Geoms are relative to the body at (cx, cy).
+    s = (f'    <body name="{prefix}plate" pos="{cx:.4f} {cy:.4f} 0">\n'
+         f'      <freejoint/>\n'
+         f'      <inertial pos="0 0 0.008" mass="0.05" diaginertia="1e-4 1e-4 1e-4"/>\n'
+         f'      <geom name="{prefix}plate_base" type="box" size="{pw / 2:.4f} {pd / 2:.4f} {base_h / 2:.4f}" '
+         f'pos="0 0 {base_h / 2:.4f}" rgba="0.95 0.95 0.95 1"/>\n'
+         f'      <geom name="{prefix}plate_collision" type="box" size="{pw / 2:.4f} {pd / 2:.4f} {WELL_H / 2:.4f}" '
+         f'pos="0 0 {base_h + WELL_H / 2:.4f}" rgba="0 0 0 0" group="3"/>\n')
     for i, r in enumerate(rows):
         for j in range(PLATE_COLS):
-            x = cx + (i - (PLATE_ROWS - 1) / 2) * WELL_PITCH
-            y = cy + (j - (PLATE_COLS - 1) / 2) * WELL_PITCH
-            s += well(f"{prefix}well_{r}{j + 1}", x, y, base_h, "1 1 0.6 0.9")
+            x = (i - (PLATE_ROWS - 1) / 2) * WELL_PITCH          # relative to the plate body
+            y = (j - (PLATE_COLS - 1) / 2) * WELL_PITCH
+            s += "      " + well(f"{prefix}well_{r}{j + 1}", x, y, base_h, "1 1 0.6 0.9").lstrip()
+    s += "    </body>\n"
     return s
 
 
@@ -168,24 +173,32 @@ def plate_layout() -> list[tuple[str, float, float]]:
 
 
 def reagent_tube(name, x, y, base_z, liquid_rgba) -> str:
-    """15 mL stock tube: visual mesh (no collider) + liquid geom + opening site."""
-    h = M_TUBE15["open_z"]
+    """15 mL stock tube as a FREE body: visual mesh + a flat-bottomed cylinder collider
+    (stands stably like a can) + liquid geom + opening site. Graspable/movable."""
+    h, cr = M_TUBE15["open_z"], M_TUBE15["r"]
     return (
-        mesh_visual(f"tube_{name}", "mesh_tube15", "mat_tube", x, y, base_z, M_TUBE15["min_z"])
-        + f'    <geom name="liquid_reagent_{name}" type="cylinder" size="0.0070 0.0001" '
-          f'pos="{x:.4f} {y:.4f} {base_z + 0.0001:.4f}" rgba="{liquid_rgba}" contype="0" conaffinity="0" group="1"/>\n'
-        + f'    <site name="reagent_{name}" pos="{x:.4f} {y:.4f} {base_z + h + 0.01:.4f}" '
-          f'size="0.003" rgba="1 0 0 0.5" group="4"/>\n'
+        f'    <body name="tubebody_{name}" pos="{x:.4f} {y:.4f} {base_z:.4f}">\n'
+        f'      <freejoint/>\n'
+        f'      <inertial pos="0 0 0.02" mass="0.012" diaginertia="2e-5 2e-5 4e-6"/>\n'
+        f'      <geom name="tube_{name}" type="mesh" mesh="mesh_tube15" material="mat_tube" contype="0" conaffinity="0" group="2"/>\n'
+        f'      <geom name="collide_tube_{name}" type="cylinder" size="{cr:.4f} {h / 2:.4f}" pos="0 0 {h / 2:.4f}" rgba="0 0 0 0" group="3"/>\n'
+        f'      <geom name="liquid_reagent_{name}" type="cylinder" size="0.0068 0.0001" pos="0 0 0.0001" rgba="{liquid_rgba}" contype="0" conaffinity="0" group="1"/>\n'
+        f'      <site name="reagent_{name}" pos="0 0 {h + 0.01:.4f}" size="0.003" rgba="1 0 0 0.5" group="4"/>\n'
+        f'      <site name="tube_grip_{name}" pos="0 0 0.1100" size="0.003" rgba="0 0 1 0.5" group="4"/>\n'
+        f'    </body>\n'
     )
 
 
 def reagent_rack(name, cx, cy) -> str:
-    """10-slot rack: 3 visual mesh parts + one solid box collider (tubes nest inside)."""
+    """10-slot rack: 3 visual mesh parts + perimeter-wall colliders (open interior). Tubes are
+    snapped+world-welded into holes, so they don't physically settle against the walls."""
+    hx, hy, hz = M_RACK["hx"], M_RACK["hy"], M_RACK["hz"]
     s = "".join(mesh_visual(f"{name}_{p}", f"mesh_rack_{p}", "mat_rack", cx, cy, 0.0, M_RACK["min_z"])
                 for p in M_RACK["parts"])
-    s += (f'    <geom name="collide_{name}" type="box" '
-          f'size="{M_RACK["hx"]:.4f} {M_RACK["hy"]:.4f} {M_RACK["hz"]:.4f}" '
-          f'pos="{cx:.4f} {cy:.4f} {M_RACK["hz"]:.4f}" rgba="0 0 0 0" group="3"/>\n')
+    for i, (sx, sy, dx, dy) in enumerate([(hx, 0.002, 0, hy), (hx, 0.002, 0, -hy),
+                                          (0.002, hy, hx, 0), (0.002, hy, -hx, 0)]):
+        s += (f'    <geom name="collide_{name}_{i}" type="box" size="{sx:.4f} {sy:.4f} {hz:.4f}" '
+              f'pos="{cx + dx:.4f} {cy + dy:.4f} {hz:.4f}" rgba="0 0 0 0" group="3"/>\n')
     return s
 
 
@@ -203,6 +216,10 @@ def build() -> str:
     slots = rack_slots(*RACK_A) + rack_slots(*RACK_B)
     for (name, rgba), (sx, sy) in zip(REAGENTS, slots):
         parts.append(reagent_tube(name, sx, sy, 0.0, rgba))
+    # an empty 15 mL hole (rack A back row) to place a tube into; neighbours are >=40 mm away
+    # and the rack has no collider, so a tube seats here without hitting walls or neighbours.
+    parts.append(f'    <site name="spare_hole" pos="{RACK_A[0]:.4f} {RACK_A[1] + 0.036:.4f} 0.13" '
+                 f'size="0.004" rgba="0 1 0 0.5" group="4"/>\n')
 
     # tip box (visual mesh placed by authored origin so the slot grid aligns) + 24 tips
     tbx, tby = TIPBOX_POS
@@ -261,6 +278,21 @@ def build() -> str:
     parts.append(
         f'    <geom name="human_zone" type="box" size="0.06 0.08 0.001" pos="{hzx} {hzy} 0.001" rgba="0.95 0.85 0.10 1" contype="0" conaffinity="0"/>\n'
         f'    <site name="human_zone" pos="{hzx} {hzy} 0.02" size="0.006" rgba="0 1 0 0.5" group="4"/>\n'
+    )
+
+    # Stand pipette: a second, upright pipette in the stand, HIDDEN at start (alpha 0, no
+    # collision). put_down_pipette()/pick_up_pipette() swap visibility+collision between this
+    # and the hand-mounted pipette. Its pose is overwritten to match the held pipette on put-down.
+    cx = M_PIPETTE["cx"]
+    sz = 0.048                                   # upright default: nozzle ~z=0.04 in the stand
+    for p in PIPETTE_PARTS:
+        parts.append(f'    <geom name="stand_pipette_{p}" type="mesh" mesh="mesh_pip_{p}" '
+                     f'rgba="0.85 0.85 0.88 0" contype="0" conaffinity="0" group="2" '
+                     f'pos="{ppx - cx:.4f} {ppy:.4f} {sz:.4f}"/>\n')
+    parts.append(
+        f'    <geom name="stand_pipette_shaft" type="capsule" fromto="{ppx} {ppy} {sz + 0.022:.4f} {ppx} {ppy} {sz + 0.17:.4f}" '
+        f'size="0.006" group="3" rgba="1 0.5 0 0" contype="0" conaffinity="0"/>\n'
+        f'    <site name="pipette_stand" pos="{ppx} {ppy} 0.04" size="0.004" rgba="0 0 1 0.5" group="4"/>\n'
     )
 
     labware = "".join(parts)
@@ -350,12 +382,42 @@ def load_model() -> mujoco.MjModel:
     frame.attach_body(panda.body("link0"), "", "")
 
     _mount_pipette(bench)
+    _add_grasp_welds(bench)
     model = bench.compile()
-    # close the fingers onto the handle in the home keyframe (rigid mount; grip is cosmetic).
-    # qpos[7:9] = the two finger slides; ctrl[7] = the gripper actuator (0..255 -> 0..0.04 m).
-    model.key_qpos[0][7] = model.key_qpos[0][8] = GRIP_HALF_M
-    model.key_ctrl[0][7] = GRIP_HALF_M / 0.04 * 255
+    _set_home_keyframe(model)
     return model
+
+
+def _add_grasp_welds(bench: mujoco.MjSpec) -> None:
+    """One inactive weld per graspable free body (tubes + plate). grasp() sets the weld's
+    relative pose to the current hand<->object pose and activates it; release()/break break it."""
+    bodies = [f"tubebody_{r[0]}" for r in REAGENTS] + ["tubebody_enzyme"]
+    bodies += [f"{prefix}plate" for prefix, _, _ in plate_layout()]
+    for b in bodies:
+        eq = bench.add_equality()                 # hand <-> object: for carrying
+        eq.type, eq.objtype = mujoco.mjtEq.mjEQ_WELD, mujoco.mjtObj.mjOBJ_BODY
+        eq.name, eq.name1, eq.name2, eq.active = f"weld_{b}", "hand", b, False
+        we = bench.add_equality()                 # world <-> object: holds it in its slot
+        we.type, we.objtype = mujoco.mjtEq.mjEQ_WELD, mujoco.mjtObj.mjOBJ_BODY
+        we.name, we.name1, we.name2, we.active = f"worldweld_{b}", "world", b, False
+
+
+HOME_ARM = [0, 0, 0, -1.57079, 0, 1.57079, -0.7853]   # Franka Panda home joint angles
+
+
+def _set_home_keyframe(model: mujoco.MjModel) -> None:
+    """Rebuild the home keyframe robustly: free-joint bodies (plate, tubes) at their rest
+    poses (qpos0), the arm at its home angles, and the fingers closed onto the pipette.
+    Addressed by joint/actuator name because free joints shift qpos/ctrl indices."""
+    model.key_qpos[0][:] = model.qpos0                 # everything at rest (free bodies seated)
+    for i, a in enumerate(HOME_ARM):
+        model.key_qpos[0][model.jnt_qposadr[model.joint(f"joint{i + 1}").id]] = a
+    for fj in ("finger_joint1", "finger_joint2"):
+        model.key_qpos[0][model.jnt_qposadr[model.joint(fj).id]] = GRIP_HALF_M
+    model.key_ctrl[0][:] = 0
+    for i, a in enumerate(HOME_ARM):
+        model.key_ctrl[0][model.actuator(f"actuator{i + 1}").id] = a
+    model.key_ctrl[0][model.actuator("actuator8").id] = GRIP_HALF_M / 0.04 * 255
 
 
 def _mount_pipette(bench: mujoco.MjSpec) -> None:
@@ -369,7 +431,7 @@ def _mount_pipette(bench: mujoco.MjSpec) -> None:
         g = pip.add_geom()
         g.type = mujoco.mjtGeom.mjGEOM_MESH
         g.meshname = f"mesh_pip_{p}"
-        g.material = "mat_pipette"
+        g.rgba = [0.85, 0.85, 0.88, 1]        # rgba (not material) so skills can hide it
         g.contype, g.conaffinity, g.group = 0, 0, 2
     shaft = pip.add_geom()
     shaft.name = "pipette_shaft"
@@ -418,7 +480,7 @@ class SceneContract:
 
 
 _ROBOT_BODIES = {"link0", "link1", "link2", "link3", "link4", "link5", "link6", "link7",
-                 "hand", "left_finger", "right_finger"}
+                 "hand", "left_finger", "right_finger", "pipette"}   # pipette is held by the arm
 
 
 def scene_contract(model: mujoco.MjModel | None = None) -> SceneContract:
@@ -440,11 +502,20 @@ def scene_contract(model: mujoco.MjModel | None = None) -> SceneContract:
                   | set(tip_points.values()))
     stations = {s: s for s in sites if s not in classified and s != EE_SITE["name"]}
 
+    def movable(body_id):   # geoms on a free-jointed body (tubes, plate) are grasp targets
+        b = body_id
+        while b != 0:
+            adr, n = m.body_jntadr[b], m.body_jntnum[b]
+            if any(m.jnt_type[adr + k] == mujoco.mjtJoint.mjJNT_FREE for k in range(n)):
+                return True
+            b = m.body_parentid[b]
+        return False
+
     obstacles = []
     for g in range(m.ngeom):
         name = m.geom(g).name
         if (m.geom_contype[g] == 0 or not name or name == "floor"
-                or m.body(m.geom_bodyid[g]).name in _ROBOT_BODIES):
+                or m.body(m.geom_bodyid[g]).name in _ROBOT_BODIES or movable(m.geom_bodyid[g])):
             continue
         obstacles.append(name)
 

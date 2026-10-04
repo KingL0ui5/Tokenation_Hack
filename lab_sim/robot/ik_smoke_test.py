@@ -65,18 +65,18 @@ def main() -> int:
     # Collision avoidance: keep every robot geom off the fixed lab obstacles, so IK picks a
     # non-colliding arm config instead of the first kinematically-valid one.
     robot_geoms = mink.get_subtree_geom_ids(model, mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "link0"))  # ty: ignore[unresolved-attribute]
-    # Note: the pipette and the reagent tubes are grasp/aspirate *targets*, not fixed
-    # obstacles, so they're excluded here (the reagent racks themselves are obstacles).
-    obstacles = ["bench", "plate_collision", "incubator", "plate_reader", "cold_block",
-                 "bin_aqueous", "bin_corrosive", "bin_solid",
-                 "collide_rackA", "collide_rackB", "collide_tipbox"]
-    obstacle_geoms = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, g) for g in obstacles]  # ty: ignore[unresolved-attribute]
+    # Fixed obstacles come from the scene contract (movable tubes/plate and the held pipette
+    # are excluded there), so this never drifts from the scene.
+    from scenes.build_lab import scene_contract
+    obstacle_geoms = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, g)  # ty: ignore[unresolved-attribute]
+                      for g in scene_contract(model).obstacles]
     collision_limit = mink.CollisionAvoidanceLimit(
         model, geom_pairs=[(robot_geoms, obstacle_geoms)],
         minimum_distance_from_collisions=0.005, collision_detection_distance=0.05)
     limits = [mink.ConfigurationLimit(model), collision_limit]
 
     arm_act = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, f"actuator{i}") for i in range(1, 8)]  # ty: ignore[unresolved-attribute]
+    arm_qadr = [model.jnt_qposadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"joint{i}")] for i in range(1, 8)]  # ty: ignore[unresolved-attribute]
     robot_set, obstacle_set = set(robot_geoms), set(obstacle_geoms)
 
     def robot_obstacle_contacts():
@@ -103,6 +103,10 @@ def main() -> int:
                 print(f"  {slot:18} {'MISSING SITE':>54}   FAIL")
                 n_fail += 1
                 continue
+            # reset to home so free-jointed objects (tubes/plate) are at their rest poses
+            # (the previous target's motion can knock them, which would move their sites)
+            mujoco.mj_resetDataKeyframe(model, data, 0)  # ty: ignore[unresolved-attribute]
+            mujoco.mj_forward(model, data)  # ty: ignore[unresolved-attribute]
             # Target pose: slot position, gripper pointing down.
             configuration.update(home_q)
             posture_task.set_target(home_q)
@@ -142,7 +146,7 @@ def main() -> int:
                     except AssertionError:
                         break
                     servo.integrate_inplace(vel, IK_DT)
-                    data.ctrl[arm_act] = servo.q[:7]
+                    data.ctrl[arm_act] = servo.q[arm_qadr]
                     mujoco.mj_step(model, data)  # ty: ignore[unresolved-attribute]
                 delta = site_xpos(model, data, ee) - (site_xpos(model, data, slot) + np.array([0, 0, STANDOFF]))
                 sag_h, sag_v = np.linalg.norm(delta[:2]), abs(delta[2])
