@@ -20,11 +20,14 @@ from inspect_ai.tool import Tool, ToolError, tool
 from harness.tools.lab_backend import LabBackend, LedgerEntry, current_backend
 
 
-def _result(b: LabBackend, tool_name: str, args: dict, ok: bool, reason: str | None = None) -> str:
+def _result(b: LabBackend, tool_name: str, args: dict, ok: bool, reason: str | None = None,
+            **ledger_only) -> str:
     res = {"ok": ok, "lab_time_min": round(b.clock_min, 2)}
-    # `reason` (tilt/tracking-error/IK diagnostics) is hidden lab truth, not agent-visible.
-    b.ledger.append(LedgerEntry(round(b.clock_min, 3), tool_name, intended=args,
-                                observed={**res, "reason": reason} if reason else res))
+    # `reason` (tilt/tracking-error/IK diagnostics) and `ledger_only` (which tip was used, which
+    # containers it touched) are hidden lab truth, not agent-visible.
+    observed = {**res, "reason": reason} if reason else dict(res)
+    observed.update(ledger_only)
+    b.ledger.append(LedgerEntry(round(b.clock_min, 3), tool_name, intended=args, observed=observed))
     return json.dumps(res)
 
 
@@ -59,7 +62,8 @@ def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
             if src not in b.contract.reagents.values():
                 raise ToolError(f"{reagent!r} is not a reagent; use transfer_sample to move liquid between containers")
             r = b.pipette(src, _site(b, destination))
-            return _result(b, "dispense", args, r["ok"], r.get("reason"))
+            return _result(b, "dispense", args, r["ok"], r.get("reason"),
+                           tip_slot=r.get("tip_slot"), touched=r.get("touched", []))
         return execute
 
     @tool
@@ -75,7 +79,8 @@ def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
             b = B()
             args = {"source": source, "destination": destination, "volume_ul": volume_ul}
             r = b.pipette(_site(b, source), _site(b, destination))
-            return _result(b, "transfer_sample", args, r["ok"], r.get("reason"))
+            return _result(b, "transfer_sample", args, r["ok"], r.get("reason"),
+                           tip_slot=r.get("tip_slot"), touched=r.get("touched", []))
         return execute
 
     @tool
@@ -93,7 +98,18 @@ def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
             return _result(b, "mix", args, r["ok"], r.get("reason"))
         return execute
 
-    return [dispense(), transfer_sample(), mix()]
+    @tool
+    def get_lab_state() -> Tool:
+        async def execute() -> str:
+            """Report lab state visible to the agent: elapsed time and the disposable-tip box."""
+            b = B()
+            ts = b.skills.tip_status()
+            res = {"lab_time_min": round(b.clock_min, 2),
+                   "tips_remaining": ts["tips_remaining"], "box_empty": ts["box_empty"]}
+            return json.dumps(res)
+        return execute
+
+    return [dispense(), transfer_sample(), mix(), get_lab_state()]
 
 
 __all__ = ["lab_tools", "LabBackend", "current_backend"]

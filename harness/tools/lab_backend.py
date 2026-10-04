@@ -70,23 +70,35 @@ class LabBackend:
         return ev
 
     def pipette(self, source: str, dest: str) -> dict:
-        """Aspirate from `source`, dispense over `dest`, with the held pipette (nozzle IK via
-        `skills.py`). Reports only real motion outcomes; no liquid is tracked."""
+        """Aspirate from `source`, dispense over `dest`, with a fresh disposable tip (nozzle IK
+        via `skills.py`): mount a tip, visit both sites, eject the tip. Reports only real motion
+        outcomes; no liquid is tracked."""
         sk = self.skills
-        sk.set_active_point("nozzle")
-        moves = []
+        if sk.has_tip:                       # leftover from a prior failed transfer
+            sk.eject_tip()
+        tip = sk.pick_up_tip()
+        moves = [("pick_up_tip", None, tip)]
+        if not tip.ok:                        # empty box, or a "tip not seated" fault
+            return {"ok": False, "reason": f"tip: {tip.reason}", "moves": moves,
+                    "tip_slot": None, "touched": []}
+        tip_slot = sk._cur_tip_slot
         self.clock_min += TIP_CHANGE_MIN
         for site in (source, dest):
             r = sk.travel_to(site, self.APPROACH_CLEAR)
             moves.append(("travel", site, r))
             if not r.ok:
-                return {"ok": False, "reason": f"{site}: {r.reason}", "moves": moves}
+                return {"ok": False, "reason": f"{site}: {r.reason}", "moves": moves,
+                        "tip_slot": tip_slot, "touched": list(sk.tip_contacts)}
             r = sk.descend(self.ENTER_DEPTH)
             moves.append(("descend", site, r))
             sk.ascend()
             if not r.ok:
-                return {"ok": False, "reason": f"{site}: {r.reason}", "moves": moves}
-        return {"ok": True, "moves": moves}
+                return {"ok": False, "reason": f"{site}: {r.reason}", "moves": moves,
+                        "tip_slot": tip_slot, "touched": list(sk.tip_contacts)}
+            sk.note_tip_contact(site)
+        touched = list(sk.tip_contacts)
+        moves.append(("eject_tip", None, sk.eject_tip()))
+        return {"ok": True, "moves": moves, "tip_slot": tip_slot, "touched": touched}
 
     def mix(self, container: str, cycles: int) -> dict:
         """Pipette up and down inside `container`. Reports only real motion outcomes."""
