@@ -2,7 +2,7 @@
 logged as a collision; redo_plan unchecks a plan so the attempt is redone.
 
 Collisions reach `backend.incidents` through `backend.log("collision", ...)` -- the channel Lok's
-held-object collision checks feed (feat/held-object-collisions). Here one is logged directly.
+held-object collision checks feed (PR #9). Here one is logged directly.
 """
 
 from __future__ import annotations

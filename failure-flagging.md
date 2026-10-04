@@ -5,37 +5,41 @@ Nobody else's code changes. The simulation, `lab_backend.py`, both solvers, meas
 The only edit to an existing file is two lines in `lab_tools.py`: an import, plus `*technician_tools(backend)`
 added to the list `lab_tools()` returns. That is how the technician gets the tools, since it loads `*lab_tools()`.
 
+## How it fits with what is already on `main`
+
+- **Lok (PR #9):** real collision checks on everything the robot carries. Each collision is logged with
+  `backend.log("collision", ...)` into `backend.incidents`, and the action fails.
+- **Louis (`dfc6f61`):** a failed action now returns its `reason` (for example `"collision: pipette_shaft vs collide_tube_nacl"`)
+  plus `must_retry`. `take_measurement` is refused until that same action is repeated successfully.
+
+These two tools sit on top of that and change neither.
+
 ## The tools
 
-**`check_collisions(since_min=0.0)`** reads the collisions `LabBackend` has logged (`backend.incidents`, fed by
-`backend.log("collision", ...)`) and tells the technician what was carried and what it hit:
+**`check_collisions(since_min=0.0)`** gives every collision logged so far in one place, with when it happened, what
+was carried and what was hit. A failed tool call reports only its own collision. This tool shows the whole
+history, so the technician can see whether anything in the current plan was hit:
 
 ```json
-{"lab_time_min": 3.1, "collision": true,
- "collisions": [{"t_min": 3.0, "carried": "collide_tube_dea", "hit": "collide_tube_tris"}]}
+{"lab_time_min": 0.08, "collision": true,
+ "collisions": [{"t_min": 0.083, "carried": "pipette_shaft", "hit": "collide_tube_nacl"}]}
 ```
 
 `since_min` limits the report to the current plan, for example the `lab_time_min` at which the plan started.
 
-**`redo_plan(task_name, reason)`** unchecks every step of the plan so the technician redoes the attempt from step 1,
-then measures. It costs no budget, and the redo is logged as a `"redo"` lab event (`backend.events`). So a spoiled
-attempt is redone *before* `take_measurement`, and the bad data point is never taken.
+**`redo_plan(task_name, reason)`** unchecks *every* step of the plan so the technician redoes the whole attempt
+from step 1. This covers what retrying only the failed action does not: a collision can spoil steps that had
+already succeeded (a knocked tube or a contaminated well). It costs no budget, and the redo is logged as a
+`"redo"` lab event (`backend.events`).
 
-## Works with Lok's collision checks
+## Verified against the current `main` (`fae0647`)
 
-Lok's `feat/held-object-collisions` (not merged yet) feeds every real collision into `backend.log("collision", ...)`.
-I ran his deliberate-collision scenario (a carried tube driven through its neighbour) with these tools added,
-and `check_collisions` reported `collide_tube_dea` hitting `collide_tube_tris` with no change to his code. On
-`main` today nothing logs collisions yet, so the tool reports none until his branch is merged.
-
-## Tests
-
-`tests/test_technician_tools.py` (3 tests) covers that both tools are in `lab_tools()`, that a logged collision is
-reported, and that `redo_plan` unchecks the plan, logs the redo, and spends no budget.
+- The branch merges cleanly, and all 20 tests pass after merging (`tests/test_technician_tools.py` plus everyone
+  else's).
+- End to end: a tube knocked into the pipette's path during `dispense` gives
+  `ok: false, reason: "collision: pipette_shaft vs collide_tube_nacl"`, and `check_collisions` then reports that same
+  collision.
 
 ```bash
 PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_technician_tools.py
 ```
-
-`tests/test_lab_tools.py` already fails on `main` (4 tests: it unpacks `lab_tools()` as 4 tools and assumes the
-tip is ejected after every transfer). It's unchanged here, and it's for whoever owns those tests.
