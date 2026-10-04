@@ -1,10 +1,12 @@
 """Lab tools: the agent's only interface to the simulated lab, driving Lok's lab_sim scene
 through `LabBackend`. Nothing in the scene has a free joint, so no container can be grasped
 or knocked over -- the only thing physically simulated is the held pipette's nozzle reaching
-named sites. There is no liquid, no volume and no instrument: a call reports only whether it
-succeeded, never a fabricated spill or reading, and never the robot/pipette's internal state
-(tilt, tracking error, joint positions) that caused a failure -- that diagnostic detail is
-recorded in the hidden ledger only, never returned to the agent.
+named sites. There is no liquid, no volume and no instrument: a call reports whether it succeeded
+and, when it failed, why (collision, unreachable, excess tilt, tracking error) -- never a
+fabricated spill or reading. Which tip was used and what it has touched stay in the hidden ledger.
+
+A failed action is remembered: `take_measurement` is refused until the same action is repeated
+successfully (or the scientist replaces the plan), so a collision cannot be quietly checked off.
 
 Usage:
     tools = lab_tools()            # one lab per Inspect sample, created on first use
@@ -23,11 +25,18 @@ from harness.tools.lab_backend import LabBackend, LedgerEntry, current_backend
 def _result(b: LabBackend, tool_name: str, args: dict, ok: bool, reason: str | None = None,
             **ledger_only) -> str:
     res = {"ok": ok, "lab_time_min": round(b.clock_min, 2)}
-    # `reason` (tilt/tracking-error/IK diagnostics) and `ledger_only` (which tip was used, which
-    # containers it touched) are hidden lab truth, not agent-visible.
-    observed = {**res, "reason": reason} if reason else dict(res)
+    # Why an action failed (collision, unreachable, excess tilt, tracking error) IS reported: the
+    # technician would see the arm fail. `ledger_only` (which tip was used, which containers it
+    # touched) remains hidden lab truth.
+    if reason:
+        res["reason"] = reason
+    observed = dict(res)
     observed.update(ledger_only)
     b.ledger.append(LedgerEntry(round(b.clock_min, 3), tool_name, intended=args, observed=observed))
+    b.record_outcome(tool_name, args, ok, reason)
+    if not ok:
+        res["must_retry"] = ("This action did not happen. Repeat it successfully before measuring, "
+                             "or ask the scientist to re-plan it; take_measurement is refused until then.")
     return json.dumps(res)
 
 

@@ -14,6 +14,7 @@ from inspect_ai.tool import ToolError, tool
 from inspect_ai.util import store_as
 
 from bo_eval.env import get_env
+from harness.tools.lab_backend import existing_backend
 from harness.types.state import Edge, LabState, Node
 
 
@@ -22,6 +23,18 @@ def measure(task_name: str) -> Node:
     if task_name not in s.task_plans:
         raise ToolError(f"No plan exists for task '{task_name}'. Ask the scientist to create one.")
     plan = s.task_plans[task_name]
+
+    # An action that failed (collision, unreachable site, tip fault) did not happen, so the well
+    # is not in the planned state. Refuse to measure -- and spend no budget -- until it is redone.
+    backend = existing_backend()
+    if backend and backend.unresolved_failures:
+        pending = [f"{f['tool']}({', '.join(f'{k}={v!r}' for k, v in f['args'].items())}): {f['reason']}"
+                   for f in backend.unresolved_failures.values()]
+        raise ToolError(
+            "Cannot measure: these actions failed and have not been repeated successfully, so the "
+            "bench is not in the planned state. No budget was spent. Redo them, or ask the "
+            "scientist to re-plan.\n  " + "\n  ".join(pending)
+        )
     env, g = get_env(s.env), s.experiment_graph
     if plan.parent not in g.nodes:
         raise ToolError(f"Plan '{task_name}' names an unknown parent node '{plan.parent}'.")

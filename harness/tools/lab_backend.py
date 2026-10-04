@@ -62,6 +62,27 @@ class LabBackend:
         self.events: list[dict] = []
         self.ledger: list[LedgerEntry] = []
         self.incidents: list[dict] = []        # collisions, logged for later use
+        # Actions that failed (collision, unreachable, tip fault) and have not since succeeded.
+        # A measurement is refused while any remain: the bench is not in the intended state.
+        self.unresolved_failures: dict[tuple, dict] = {}
+
+    # Which arguments identify "the same action", so a successful retry clears the failure.
+    ACTION_KEYS = {"dispense": ("reagent", "destination"), "transfer_sample": ("source", "destination"),
+                   "mix": ("container",)}
+
+    def record_outcome(self, tool: str, args: dict, ok: bool, reason: str | None) -> None:
+        """Track unresolved failures. Re-running the same action successfully clears it."""
+        key = (tool,) + tuple(str(args.get(k)) for k in self.ACTION_KEYS.get(tool, ()))
+        if ok:
+            self.unresolved_failures.pop(key, None)
+        else:
+            self.unresolved_failures[key] = {"tool": tool, "args": args, "reason": reason,
+                                             "t_lab": round(self.clock_min, 3)}
+
+    def clear_failures(self) -> None:
+        """Forget unresolved failures -- used when the scientist replaces the plan, so an action
+        that can never succeed (e.g. an unreachable well) does not deadlock the run."""
+        self.unresolved_failures.clear()
 
     def log(self, kind: str, **detail) -> dict:
         ev = {"t_min": round(self.clock_min, 3), "kind": kind, **detail}
@@ -149,9 +170,9 @@ class LabBackend:
 _BACKENDS: dict[tuple, LabBackend] = {}
 
 
-def current_backend(**kwargs) -> LabBackend:
+def _backend_key(**kwargs) -> tuple[tuple, int | None]:
     key: tuple = ("default",)
-    seed = kwargs.pop("seed", None)
+    seed = kwargs.get("seed")
     try:
         from inspect_ai.solver._task_state import sample_state
 
@@ -162,6 +183,18 @@ def current_backend(**kwargs) -> LabBackend:
                 seed = int(state.metadata.get("seed", 0)) if state.metadata else 0
     except Exception:
         pass
+    return key, seed
+
+
+def current_backend(**kwargs) -> LabBackend:
+    key, seed = _backend_key(seed=kwargs.pop("seed", None))
     if key not in _BACKENDS:
         _BACKENDS[key] = LabBackend(seed=seed or 0, **kwargs)
     return _BACKENDS[key]
+
+
+def existing_backend() -> LabBackend | None:
+    """This sample's backend if one has already been built, else None. Never creates a lab, so
+    tools that only need to consult it don't pay for loading the MuJoCo scene."""
+    key, _ = _backend_key()
+    return _BACKENDS.get(key)

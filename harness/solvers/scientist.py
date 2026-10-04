@@ -12,7 +12,7 @@ from harness.tools.submit import submit
 MARKER = "Strategic Planner Agent (Scientist)"
 
 
-def _briefing(lab_state: LabState) -> str:
+def briefing(lab_state: LabState) -> str:
     return f"""
         You are the Strategic Planner Agent (Scientist), an autonomous experimentalist searching an
         experimental space for the optimal configuration. You share this transcript with a lab technician
@@ -59,8 +59,6 @@ def scientist_solver():
         lab_state = store_as(LabState)
         scientist_model = get_model()
 
-        if not briefed(state.messages, MARKER):
-            state.messages.append(ChatMessageSystem(content=_briefing(lab_state)))
         state.messages.append(ChatMessageUser(content=_turn(lab_state)))
 
         messages, _ = await scientist_model.generate_loop(

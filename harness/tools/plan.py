@@ -2,6 +2,7 @@ from inspect_ai.tool import ToolError, tool
 from inspect_ai.util import store_as
 
 from bo_eval.env import get_env
+from harness.tools.lab_backend import existing_backend
 from harness.types.state import LabState, Plan
 
 
@@ -53,6 +54,10 @@ def create_plan():
             steps=list(steps), completed=[False] * len(steps),
             params=params, parent=parent, reasoning=reasoning,
         )
+        # A new plan supersedes whatever failed under the old one, so an action that can never
+        # succeed (an unreachable well, say) cannot deadlock the run.
+        if (backend := existing_backend()) is not None:
+            backend.clear_failures()
 
         return (f"Created plan for '{task_name}' with {len(steps)} step(s), condition "
                 f"{cond}, following {parent}.")

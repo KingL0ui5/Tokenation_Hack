@@ -11,7 +11,7 @@ from harness.tools.take_measurement import take_measurement
 MARKER = "lab technician (Inner Loop: Manipulation)"
 
 
-def _briefing(lab_state: LabState) -> str:
+def briefing(lab_state: LabState) -> str:
     return f"""
         You are the lab technician (Inner Loop: Manipulation), one of two agents sharing this transcript.
         The other is the scientist, who writes the plans you execute. You carry out a plan inside the lab
@@ -36,6 +36,10 @@ def _briefing(lab_state: LabState) -> str:
         choose the condition: it, its parent node and its reasoning come from the plan the scientist wrote.
         Calling it before the plan is fully checked off still spends budget, but the measurement fails
         and returns no reading.
+        - If a tool returns ok:false it tells you why (a collision, an unreachable site, a tip fault).
+        That action did NOT happen, so do not check its step off: repeat it until it succeeds, or
+        report plainly that it cannot be done and let the scientist re-plan. `take_measurement` is
+        refused, at no cost to the budget, while any action is still in a failed state.
         - The number `take_measurement` returns is the only measurement that exists. Never infer, estimate or
         invent a result from what you observed while pipetting, and if an action fails, say so plainly.
     """
@@ -55,8 +59,6 @@ def technician_solver():
         lab_state = store_as(LabState)
         technician_model = get_model()
 
-        if not briefed(state.messages, MARKER):
-            state.messages.append(ChatMessageSystem(content=_briefing(lab_state)))
         state.messages.append(ChatMessageUser(content=_turn(lab_state)))
 
         messages, _ = await technician_model.generate_loop(
