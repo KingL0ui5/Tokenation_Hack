@@ -99,17 +99,34 @@ def lab_tools(backend: LabBackend | None = None) -> list[Tool]:
         return execute
 
     @tool
+    def change_tip() -> Tool:
+        async def execute() -> str:
+            """Eject the mounted tip into solid waste and fit a fresh one from the tip box.
+
+            The pipette keeps one tip across operations, so every container that tip has entered
+            carries over into the next one until you change it. Change tips between reagents to
+            avoid cross-contamination. The box holds a finite number of tips (get_lab_state).
+            """
+            b = B()
+            r = b.change_tip()
+            return _result(b, "change_tip", {}, r["ok"], r.get("reason"),
+                           ejected_slot=r.get("ejected_slot"),
+                           ejected_contacts=r.get("ejected_contacts", []),
+                           new_slot=r.get("new_slot"))
+        return execute
+
+    @tool
     def get_lab_state() -> Tool:
         async def execute() -> str:
             """Report lab state visible to the agent: elapsed time and the disposable-tip box."""
             b = B()
             ts = b.skills.tip_status()
-            res = {"lab_time_min": round(b.clock_min, 2),
+            res = {"lab_time_min": round(b.clock_min, 2), "has_tip": ts["has_tip"],
                    "tips_remaining": ts["tips_remaining"], "box_empty": ts["box_empty"]}
             return json.dumps(res)
         return execute
 
-    return [dispense(), transfer_sample(), mix(), get_lab_state()]
+    return [dispense(), transfer_sample(), mix(), change_tip(), get_lab_state()]
 
 
 __all__ = ["lab_tools", "LabBackend", "current_backend"]

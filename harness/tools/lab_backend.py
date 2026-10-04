@@ -69,20 +69,38 @@ class LabBackend:
             self.incidents.append(ev)
         return ev
 
-    def pipette(self, source: str, dest: str) -> dict:
-        """Aspirate from `source`, dispense over `dest`, with a fresh disposable tip (nozzle IK
-        via `skills.py`): mount a tip, visit both sites, eject the tip. Reports only real motion
-        outcomes; no liquid is tracked."""
+    def change_tip(self) -> dict:
+        """Discard the mounted tip (if any) into solid waste and mount a fresh one from the box.
+        The box is finite, so this fails once it is empty. Which slot was used and what the
+        discarded tip had touched are ledger truth, not returned to the agent."""
         sk = self.skills
-        if sk.has_tip:                       # leftover from a prior failed transfer
-            sk.eject_tip()
-        tip = sk.pick_up_tip()
-        moves = [("pick_up_tip", None, tip)]
-        if not tip.ok:                        # empty box, or a "tip not seated" fault
-            return {"ok": False, "reason": f"tip: {tip.reason}", "moves": moves,
-                    "tip_slot": None, "touched": []}
-        tip_slot = sk._cur_tip_slot
+        out = {"ejected_slot": None, "ejected_contacts": [], "new_slot": None}
+        if sk.has_tip:
+            out["ejected_slot"] = getattr(sk, "_cur_tip_slot", None)
+            out["ejected_contacts"] = list(sk.tip_contacts)
+            r = sk.eject_tip()
+            if not r.ok:
+                return {"ok": False, "reason": f"eject: {r.reason}", **out}
+        r = sk.pick_up_tip()
         self.clock_min += TIP_CHANGE_MIN
+        out["new_slot"] = getattr(sk, "_cur_tip_slot", None) if r.ok else None
+        return {"ok": r.ok, "reason": None if r.ok else r.reason, **out}
+
+    def pipette(self, source: str, dest: str) -> dict:
+        """Aspirate from `source`, dispense over `dest` with the mounted disposable tip (nozzle IK
+        via `skills.py`). A tip is mounted automatically if none is held, but an existing tip is
+        KEPT and reused -- so liquid carries over between containers until `change_tip` is called,
+        exactly as it would on a bench. Reports only real motion outcomes; no liquid is tracked."""
+        sk = self.skills
+        moves = []
+        if not sk.has_tip:
+            tip = sk.pick_up_tip()
+            moves.append(("pick_up_tip", None, tip))
+            self.clock_min += TIP_CHANGE_MIN
+            if not tip.ok:                    # empty box, or a "tip not seated" fault
+                return {"ok": False, "reason": f"tip: {tip.reason}", "moves": moves,
+                        "tip_slot": None, "touched": []}
+        tip_slot = getattr(sk, "_cur_tip_slot", None)
         for site in (source, dest):
             r = sk.travel_to(site, self.APPROACH_CLEAR)
             moves.append(("travel", site, r))
@@ -96,14 +114,13 @@ class LabBackend:
                 return {"ok": False, "reason": f"{site}: {r.reason}", "moves": moves,
                         "tip_slot": tip_slot, "touched": list(sk.tip_contacts)}
             sk.note_tip_contact(site)
-        touched = list(sk.tip_contacts)
-        moves.append(("eject_tip", None, sk.eject_tip()))
-        return {"ok": True, "moves": moves, "tip_slot": tip_slot, "touched": touched}
+        return {"ok": True, "moves": moves, "tip_slot": tip_slot, "touched": list(sk.tip_contacts)}
 
     def mix(self, container: str, cycles: int) -> dict:
         """Pipette up and down inside `container`. Reports only real motion outcomes."""
         sk = self.skills
-        sk.set_active_point("nozzle")
+        sk.set_active_point("tip_end" if sk.has_tip else "nozzle")
+        sk.note_tip_contact(container)
         r = sk.travel_to(container, self.APPROACH_CLEAR)
         if r.ok:
             r = sk.descend(0.05)

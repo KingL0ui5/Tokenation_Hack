@@ -28,6 +28,9 @@ def _briefing(lab_state: LabState) -> str:
         (any free well, any listed reagent, a volume in microlitres), say what you chose, and carry on.
         - Work one plan at a time. Perform each step, then check it off with `complete_step`; use `view_plan`
         to see what is left.
+        - The pipette keeps one disposable tip across operations, so liquid carries over between every
+        container that tip enters. Call `change_tip` between reagents to avoid cross-contamination;
+        `get_lab_state` shows whether a tip is fitted and how many are left in the box.
         - Once every step of that plan is checked off, call `take_measurement` with the task name. You do not
         choose the condition: it, its parent node and its reasoning come from the plan the scientist wrote.
         Calling it before the plan is fully checked off still spends budget, but the measurement fails
