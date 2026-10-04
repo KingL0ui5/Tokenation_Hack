@@ -1,11 +1,11 @@
 from inspect_ai.solver import solver, TaskState, Generate
-from inspect_ai.model import get_model, ChatMessage
+from inspect_ai.model import get_model, ChatMessageSystem
 from inspect_ai.util import store_as
 
 from harness.types.state import LabState
-from harness.tools.experiment import run_experiment
-from harness.tools.graph import add_reasoning, close_branch, view_graph
+from harness.tools.plan import complete_step, view_plan
 from harness.tools.lab_tools import lab_tools
+from harness.tools.take_measurement import take_measurement
 
 @solver
 def technician_solver():
@@ -13,25 +13,33 @@ def technician_solver():
         lab_state = store_as(LabState)
         technician_model = get_model()
 
-        state.messages.append(ChatMessage(
-            role="system", 
-            content=f"""
+        prompt=f"""
                 You are the lab technician (Inner Loop: Manipulation).
-                Your job is to execute the scientist's plan using physical mechanics and trajectory vectors inside the lab envioronment.
-                Use `run_experiment` for tracked experiments and the lab tools for physical lab actions.
-                For each action/skill you perform (like 'pick_up_test_tube'), it will be tracked in a task-specific ReasoningGraph.
+                Your job is to execute the scientist's plan inside the lab environment using
+                `dispense`, `transfer_sample` and `mix` -- the arm physically holds a pipette
+                and moves liquid with it. To take your *final* measurement, you must execute the 
+                take_measurement tool.
 
-                Current Task Graphs:
-                {lab_state.task_graphs_summary}
+                Current Experiment Plans (checklists the scientist expects you to follow):
+                {lab_state.task_plans_summary}
 
-                If an action fails, use `add_reasoning` or `close_branch` to record WHY it failed in that task's graph, 
-                so you do not repeat the mistake. Focus on maintaining physical safety (e.g. not knocking over beakers).
+                Follow a task's plan step by step and call `complete_step` as you finish each one
+                (use `view_plan` to check progress). Once every step is checked off, the task is
+                done -- You may now call `take_measurement` with the task name and the parameter
+                values you actually ran at. Calling it before the plan is fully checked off still
+                spends budget and returns an INVALID result with no reading, so finish the plan first.
+                The number it returns is the only measurement that exists: never infer, estimate or
+                invent a result from what you observed while pipetting.
+
+                If an action fails or a step cannot be completed as planned, say so plainly rather
+                than inventing a result.
             """
-        ))  # ty: ignore[call-non-callable]
+
+        state.messages.append(ChatMessageSystem(content=prompt))
         
         messages, _ = await technician_model.generate_loop(
             state.messages,
-            tools=[run_experiment(), add_reasoning(), close_branch(), view_graph(), *lab_tools()]
+            tools=[complete_step(), view_plan(), take_measurement(), *lab_tools()]
         )
         
         state.messages.extend(messages)

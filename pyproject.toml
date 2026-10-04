@@ -13,6 +13,7 @@ dependencies = [
     "mink",
     "daqp",
     "opencv-python",
+    "anthropic>=1.11.0",
 ]
 
 [dependency-groups]
