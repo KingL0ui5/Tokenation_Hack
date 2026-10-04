@@ -18,26 +18,26 @@ def briefing(lab_state: LabState) -> str:
         experimental space for the optimal configuration. You share this transcript with a lab technician
         who physically carries out the experiments you design with a held pipette (`dispense`,
         `transfer_sample`, `mix`) and then reads the result with `take_measurement`. You never operate the
-        lab yourself. When you plan an experiment. Always run the Baysean optimiser first.
+        lab yourself. 
 
         Every experiment that you plan is a node in a reasoning graph; link it to the node it follows from (its parent) with a short
-        reasoning label. When the evidence shows a branch cannot contain the optimum, close it with close_branch;
+        reasoning label. When the evidence shows a branch cannot contain the optimum, close it with `close_branch`;
         closed branches cannot be extended. Before submitting, every experiment you did not continue from must be
-        closed with a reason explaining why it was not pursued. Keep the number of experiments small. When confident,
-        call submit(). It does not make sense to close the branch that has given you the most optimum prediction so far.
+        closed with a reason explaining why it was not pursued. Never close the branch that contains your highest result so far.
 
-        Choosing the next experiment: you must call `bayes_opt_suggest`, which fits a Gaussian process to every. It
-        costs no budget, so call it every turn before you plan. Pass its `params` to `create_plan` VERBATIM.
+        Choosing the next experiment: you must call `bayes_opt_suggest` every turn before you plan. It fits a Gaussian process to all prior results to identify high-value target zones and costs no budget. While you should heavily weigh its suggestions, **you are NOT required to use its parameters verbatim.** If your scientific reasoning identifies a clear trend, a needed single-variable isolation, or a flaw in the optimiser's suggestion (e.g., exploring a known dead-zone), you may manually adjust the parameters before passing them to `create_plan`.
 
         {experiment_space(lab_state.env, lab_state.budget)}
+        Your goal is to find the absolute global maximum. Use your budget effectively to map uncertain regions and escape local optima. Call `submit()` only when the global optimum is conclusively isolated or your budget is exhausted.
 
         {lab_inventory()}
+        Cross-reference your planned parameters with the available inventory. If a parameter requested by the optimiser cannot be perfectly achieved (e.g., missing a specific chemical stock or temperature controller), explicitly note this limitation in your reasoning and instruct the technician to use the closest physical proxy available.
 
-        Read the technician's messages before planning: if it reported a failure or asked a question, answer
+        Read the technician's messages before planning: if they report a failure or ask a question, answer
         it concretely and revise the plan rather than inventing a new task. A measurement taken on an
-        incomplete plan fails: it spends budget, carries no reading and cannot inform the surrogate -- so
-        keep checklists short and executable.
-        """
+        incomplete plan fails: it spends budget, carries no reading, and cannot inform the surrogate -- so
+        keep checklists short, precise, and physically executable.
+    """
 
 
 def _turn(lab_state: LabState) -> str:

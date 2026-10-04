@@ -43,10 +43,14 @@ def lab_scorer(graph_dir: str | None = "logs/graphs", tolerance: float = 0.0):
         if graph_dir:
             out = Path(graph_dir) / f"{state.sample_id}_epoch{state.epoch}"
             out.parent.mkdir(parents=True, exist_ok=True)
+            actions = "\n\n".join(
+                f"## action: {name}\n```mermaid\n{ag.to_mermaid()}\n```\n\n```\n{ag.to_text()}\n```"
+                for name, ag in s.action_graphs.items()
+            )
             out.with_suffix(".md").write_text(
                 f"```mermaid\n{mermaid}\n```\n\n```\n{g.to_text()}\n```\n\n"
                 + "\n\n".join(f"## {name}\n{plan.to_text()}" for name, plan in plans.items())
-                + "\n"
+                + (f"\n\n{actions}" if actions else "") + "\n"
             )
             out.with_suffix(".json").write_text(g.model_dump_json(indent=2))
 
@@ -66,6 +70,7 @@ def lab_scorer(graph_dir: str | None = "logs/graphs", tolerance: float = 0.0):
                 "first_experiment_at_optimum": hits[0] if hits else None,
                 "graph": g.model_dump(),
                 "task_plans": {k: v.model_dump() for k, v in plans.items()},
+                "action_graphs": {k: v.model_dump() for k, v in s.action_graphs.items()},
             },
         )
 

@@ -4,6 +4,7 @@ from inspect_ai.util import store_as
 
 from harness.solvers.context import briefed, experiment_space, lab_inventory
 from harness.types.state import LabState
+from harness.tools.action_graph import map_action, record_attempt, view_actions
 from harness.tools.plan import complete_step, view_plan
 from harness.tools.lab_tools import lab_tools
 from harness.tools.take_measurement import take_measurement
@@ -40,6 +41,12 @@ def briefing(lab_state: LabState) -> str:
         That action did NOT happen, so do not check its step off: repeat it until it succeeds, or
         report plainly that it cannot be done and let the scientist re-plan. `take_measurement` is
         refused, at no cost to the budget, while any action is still in a failed state.
+        - Before a physical step that could cause an incident (anything beyond routine pipetting:
+        working between packed tubes, unusual reach), map the ways it could be done with
+        `map_action`, try the most promising, then `record_attempt` with what happened. If it
+        failed, record the MISTAKE in plain words and close that approach -- closed approaches are
+        never retried; pick another open one instead. Check `view_actions` before any action you
+        have attempted before: the graphs carry every mistake made so far, so none is made twice.
         - The number `take_measurement` returns is the only measurement that exists. Never infer, estimate or
         invent a result from what you observed while pipetting, and if an action fails, say so plainly.
     """
@@ -48,8 +55,10 @@ def briefing(lab_state: LabState) -> str:
 def _turn(lab_state: LabState) -> str:
     return (
         f"TECHNICIAN'S TURN.\n\nCurrent experiment plans:\n{lab_state.task_plans_summary}\n\n"
+        f"Actions mapped so far (approaches, outcomes, recorded mistakes):\n"
+        f"{lab_state.action_graphs_summary}\n\n"
         "Execute the outstanding plan now, checking off each step as you finish it, and measure it "
-        "once it is complete."
+        "once it is complete. Do not repeat any closed approach."
     )
 
 
@@ -63,7 +72,8 @@ def technician_solver():
 
         messages, _ = await technician_model.generate_loop(
             state.messages,
-            tools=[complete_step(), view_plan(), take_measurement(), *lab_tools()]
+            tools=[complete_step(), view_plan(), take_measurement(),
+                   map_action(), record_attempt(), view_actions(), *lab_tools()]
         )
 
         state.messages.extend(messages)

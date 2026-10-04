@@ -24,3 +24,5 @@ lab_sim/experiments/*.png
 
 # uv/pyenv python pin (local)
 .python-version
+
+demo

@@ -120,6 +120,66 @@ class ReasoningGraph(BaseModel):
         return "\n".join(lines)
 
 
+class ActionNode(BaseModel):
+    """One way a physical action could be performed. `outcome` is what actually happened when it
+    was tried (None = not tried yet); `mistake` is what went wrong, recorded so the same mistake
+    is never made twice; a closed node is ruled out and must not be retried."""
+    id: str
+    approach: str
+    outcome: str | None = None
+    mistake: str | None = None
+    closed: bool = False
+    closed_reason: str | None = None
+
+
+class ActionGraph(BaseModel):
+    """Action-level reasoning graph for ONE physical action: the different ways it could be done,
+    which were tried, and what went wrong. Persistent for the whole run, so a lesson learned in
+    one experiment carries into the next. Rendered in the same mermaid dialect as ReasoningGraph."""
+    action: str
+    nodes: dict[str, ActionNode] = Field(default_factory=dict)
+    edges: list[Edge] = Field(default_factory=list)
+
+    @property
+    def open_approaches(self) -> list[str]:
+        return [n.id for n in self.nodes.values() if not n.closed]
+
+    def to_text(self) -> str:
+        out = [f"action: {self.action}"]
+        for n in self.nodes.values():
+            tail = (f" -> {n.outcome}" if n.outcome else " (not tried)") + \
+                   (" (CLOSED)" if n.closed else "")
+            out.append(f"  {n.id} [{n.approach}]{tail}")
+            if n.mistake:
+                out.append(f"      mistake: {n.mistake}")
+        return "\n".join(out)
+
+    def to_mermaid(self) -> str:
+        def wrap(s: str, width: int = 24) -> list[str]:
+            words, lines = s.split(), [""]
+            for w in words:
+                if lines[-1] and len(lines[-1]) + 1 + len(w) > width:
+                    lines.append(w)
+                else:
+                    lines[-1] = f"{lines[-1]} {w}".strip()
+            return lines
+
+        lines = ["graph TD", '  root(("action"))']
+        for n in self.nodes.values():
+            label = "<br/>".join([n.id] + wrap(n.approach))
+            if n.outcome:
+                label += f"<br/><b>{n.outcome}</b>"
+            if n.mistake:
+                label += f"<br/><i>{n.mistake}</i>"
+            lines.append(f'  {n.id}["{label}"]')
+        lines += [f'  {e.source} -->|"{e.reasoning[:120]}"| {e.target}' for e in self.edges]
+        closed = [n.id for n in self.nodes.values() if n.closed]
+        if closed:
+            lines.append(f"  classDef closed {_NODE_STYLES['closed']}")
+            lines.append(f"  class {','.join(closed)} closed")
+        return "\n".join(lines)
+
+
 class Plan(BaseModel):
     """One experiment, as handed to the technician: the condition the scientist chose, where it
     belongs in the reasoning graph, and the checklist of physical steps that set it up.
@@ -154,6 +214,7 @@ class LabState(StoreModel):
     seed: int = 0
     experiment_graph: ReasoningGraph = Field(default_factory=ReasoningGraph)
     task_plans: dict[str, Plan] = Field(default_factory=dict)
+    action_graphs: dict[str, ActionGraph] = Field(default_factory=dict)
     submission: dict[str, float] | None = None
 
     @property
@@ -164,3 +225,9 @@ class LabState(StoreModel):
             for task_name, plan in self.task_plans.items()
         )
         return summary if summary else "No experiment plans have been created yet."
+
+    @property
+    def action_graphs_summary(self) -> str:
+        """Every action mapped so far, with outcomes and recorded mistakes, for the prompts."""
+        summary = "\n\n".join(g.to_text() for g in self.action_graphs.values())
+        return summary if summary else "No actions have been mapped yet."
