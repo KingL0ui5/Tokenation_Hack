@@ -96,9 +96,19 @@ RACK_B = (0.46, -0.33)             # back reagent rack centre
 RACK_15ML_HOLES_X = (-0.090, -0.054, -0.018, 0.018, 0.054, 0.090)
 
 TIPBOX_POS = (0.30, 0.12)
-# 24-slot tip box: 6 cols x 4 rows at 8 mm pitch (from tip_box.gen.xml dividers).
+# 24-slot tip box: 6 cols x 4 rows at 8 mm pitch. Slot centres are the cells between the
+# divider walls in AutoBio's tip_box.gen.xml (plate_with_box_well(.052,.036,.040,.004,.008,4,6),
+# outer walls x=+/-.024 y=+/-.016, inner dividers x=+/-.016,+/-.008,0 and y=+/-.008,0) -- taken
+# from the definition, not an assumed grid. See models/autobio/NOTICE.md.
 TIP_COLS = (-0.020, -0.012, -0.004, 0.004, 0.012, 0.020)
 TIP_ROWS = (-0.012, -0.004, 0.004, 0.012)
+# Disposable 200 uL tip (AutoBio tip_200ul, visual only): 50 mm long, wide mount end at the
+# authored origin (mesh z=0) tapering to a point at z=-0.050. In the box it stands wide-end up
+# with its top at TIP_TOP_Z, so the nozzle descends onto the top to pick it up.
+TIP_LEN = 0.050
+TIP_TOP_Z = 0.052                  # world z of each in-box tip's top (and its targeting site)
+TIPBOX_COLL_TOP = 0.030            # box collider top, kept below TIP_TOP_Z so pick-up isn't blocked
+N_BIN_TIPS = 8                     # pre-placed hidden tips in the solid-waste bin, revealed on eject
 
 PIPETTE_POS = (0.28, 0.30)         # the (now empty) pipette stand stays here as scenery
 
@@ -108,7 +118,7 @@ PIPETTE_POS = (0.28, 0.30)         # the (now empty) pipette stand stays here as
 PIPETTE_MOUNT_POS = (0.0, 0.0, 0.2573)    # hand frame; dropped so the plunger clears the palm by ~1 mm
 PIPETTE_MOUNT_QUAT = (0.0, 1.0, 0.0, 0.0)  # 180 deg about hand-x
 PIPETTE_NOZZLE_Z = -0.008                  # authored nozzle (pipette min-z), body-local
-PIPETTE_TIP_END_Z = -0.058                 # ~50 mm below the nozzle (for a disposable tip)
+PIPETTE_TIP_END_Z = PIPETTE_NOZZLE_Z - TIP_LEN   # real tip end: 50 mm below the nozzle
 PIPETTE_SHAFT_FROMTO = (0, 0, 0.17, 0, 0, 0.022)   # capsule: body/shaft down to ~3 cm above tip
 PIPETTE_SHAFT_R = 0.006
 # Handle is 16.27 mm wide along the finger-slide axis at the grip height (measured from the
@@ -225,20 +235,28 @@ def build() -> str:
     tbx, tby = TIPBOX_POS
     parts.append(mesh_visual("tipbox_up", "mesh_tipbox_up", "mat_tipbox", tbx, tby, 0.0, M_TIPBOX["min_z"]))
     parts.append(mesh_visual("tipbox_low", "mesh_tipbox_low", "mat_tipbox", tbx, tby, 0.0, M_TIPBOX["min_z"]))
+    # The box collider's top is lowered to TIPBOX_COLL_TOP (below the tips' grab height at
+    # TIP_TOP_Z) so the nozzle can descend onto a tip top without the box repelling the arm
+    # during pick-up. It still protects the box body against sideways arm collisions.
+    coll_hz = TIPBOX_COLL_TOP / 2
     parts.append(
-        f'    <geom name="collide_tipbox" type="box" size="{M_TIPBOX["hx"]:.4f} {M_TIPBOX["hy"]:.4f} {M_TIPBOX["hz"]:.4f}" '
-        f'pos="{tbx:.4f} {tby:.4f} {M_TIPBOX["hz"]:.4f}" rgba="0 0 0 0" group="3"/>\n'
+        f'    <geom name="collide_tipbox" type="box" size="{M_TIPBOX["hx"]:.4f} {M_TIPBOX["hy"]:.4f} {coll_hz:.4f}" '
+        f'pos="{tbx:.4f} {tby:.4f} {coll_hz:.4f}" rgba="0 0 0 0" group="3"/>\n'
         f'    <site name="tip_box" pos="{tbx:.4f} {tby:.4f} {2 * M_TIPBOX["hz"] + 0.025:.4f}" '
         f'size="0.004" rgba="0 1 0 0.5" group="4"/>\n'
     )
-    # 24 visual tips (tip_00..tip_23); the agent/UI hides a tip by setting its rgba alpha 0.
+    # 24 visual tips (tip_00..tip_23), AutoBio 200 uL mesh, wide end up, top at TIP_TOP_Z, with a
+    # targeting site at each top (tip_site_00..). pick_up_tip() hides a tip by setting its alpha 0.
     i = 0
     for ry in TIP_ROWS:
         for cxx in TIP_COLS:
+            tx, ty = tbx + cxx, tby + ry
             parts.append(
-                f'    <geom name="tip_{i:02d}" type="cylinder" size="0.0022 0.016" '
-                f'pos="{tbx + cxx:.4f} {tby + ry:.4f} 0.0420" rgba="0.95 0.95 0.80 0.95" '
-                f'contype="0" conaffinity="0" group="2"/>\n')
+                f'    <geom name="tip_{i:02d}" type="mesh" mesh="mesh_tip" '
+                f'pos="{tx:.4f} {ty:.4f} {TIP_TOP_Z:.4f}" rgba="0.95 0.95 0.80 1" '
+                f'contype="0" conaffinity="0" group="2"/>\n'
+                f'    <site name="tip_site_{i:02d}" pos="{tx:.4f} {ty:.4f} {TIP_TOP_Z:.4f}" '
+                f'size="0.003" rgba="1 0.6 0 0.6" group="4"/>\n')
             i += 1
 
     # (old 4-tube dilution rack removed; dilutions can use spare 15 mL holes later)
@@ -267,6 +285,16 @@ def build() -> str:
             f'    <geom name="bin_{wname}" type="cylinder" size="0.035 0.05" pos="{wx:.4f} {WASTE_ROW_Y} 0.05" rgba="{rgba}"/>\n'
             f'    <site name="waste_{wname}" pos="{wx:.4f} {WASTE_ROW_Y} 0.12" size="0.004" rgba="0 1 0 0.5" group="4"/>\n'
         )
+    # Pre-placed ejected tips in the SOLID bin, hidden at start (alpha 0). eject_tip() reveals one
+    # per call so discarded tips visibly accumulate. Visual only; deterministic ring of offsets.
+    solid_x = WASTE_X0 + (len(WASTE_BINS) - 1) * WASTE_DX
+    for t in range(N_BIN_TIPS):
+        ang = 2 * math.pi * t / N_BIN_TIPS
+        ox, oy = 0.018 * math.cos(ang), 0.018 * math.sin(ang)
+        parts.append(
+            f'    <geom name="bintip_{t}" type="mesh" mesh="mesh_tip" '
+            f'pos="{solid_x + ox:.4f} {WASTE_ROW_Y + oy:.4f} 0.0950" '
+            f'rgba="0.95 0.95 0.80 0" contype="0" conaffinity="0" group="2"/>\n')
 
     # cold block (chilled) holding the enzyme tube
     cbx, cby = COLD_BLOCK_POS
@@ -327,6 +355,7 @@ def build() -> str:
     <mesh name="mesh_rack_upper_plane" file="{AB}/rack/centrifuge_10slot/upper_plane.obj" scale="0.001 0.001 0.001"/>
     <mesh name="mesh_tipbox_up" file="{AB}/rack/tip_box_24slot/up.obj" scale="0.001 0.001 0.001"/>
     <mesh name="mesh_tipbox_low" file="{AB}/rack/tip_box_24slot/low.obj" scale="0.001 0.001 0.001"/>
+    <mesh name="mesh_tip" file="{AB}/container/tip_200ul.obj" scale="0.001 0.001 0.001"/>
     <material name="mat_pipette" rgba="0.85 0.85 0.88 1"/>
     <material name="mat_tube" rgba="0.80 0.90 1.0 0.45"/>
     <material name="mat_rack" rgba="0.35 0.42 0.55 1"/>
@@ -440,17 +469,47 @@ def _mount_pipette(bench: mujoco.MjSpec) -> None:
     shaft.size = [PIPETTE_SHAFT_R, 0, 0]
     shaft.group = 3
     shaft.rgba = [1, 0.5, 0, 0.0]              # invisible collider
-    # NOTE (disposable tips, later): when a tip is attached, switch the active IK point to
-    # pipette_tip_end, and extend the no-collision region to cover the WHOLE tip (not just the
-    # last ~3 cm here) -- i.e. shorten this capsule to stop above the attached tip's top.
+    # The shaft capsule stops at z=0.022 (body frame), ~3 cm above the nozzle, so the whole
+    # disposable-tip region below it is already collider-free; the tip carries its own collider.
     for nm, z in (("pipette_nozzle", PIPETTE_NOZZLE_Z), ("pipette_tip_end", PIPETTE_TIP_END_Z)):
         s = pip.add_site()
         s.name, s.pos, s.size, s.group, s.rgba = nm, [0, 0, z], [0.004, 0, 0], 4, [0, 0, 1, 0.8]
 
-    # don't compute finger<->pipette contacts (siblings under hand)
+    # Disposable tip mounted on the nozzle: a fixed child body of the pipette, HIDDEN and
+    # non-colliding at start (alpha 0, contype/conaffinity 0). pick_up_tip()/eject_tip() toggle
+    # its visibility and collider. Tip top sits exactly at the nozzle; it extends 50 mm down to
+    # pipette_tip_end. When active, its slim capsule collider lets the arm avoid obstacles with
+    # the tip included in travel height, while contact-excludes below let the tip enter vessels.
+    tipb = pip.add_body()
+    tipb.name = "tip_mounted"
+    tv = tipb.add_geom()
+    tv.name = "tip_mounted_visual"
+    tv.type = mujoco.mjtGeom.mjGEOM_MESH
+    tv.meshname = "mesh_tip"
+    tv.pos = [0, 0, PIPETTE_NOZZLE_Z]         # mesh origin (wide top) at the nozzle
+    tv.rgba = [0.95, 0.95, 0.80, 0.0]         # hidden until a tip is picked up
+    tv.contype, tv.conaffinity, tv.group = 0, 0, 2
+    tc = tipb.add_geom()
+    tc.name = "tip_mounted_collision"
+    tc.type = mujoco.mjtGeom.mjGEOM_CAPSULE
+    tc.fromto = [0, 0, PIPETTE_NOZZLE_Z, 0, 0, PIPETTE_TIP_END_Z]
+    tc.size = [0.002, 0, 0]
+    tc.group = 3
+    tc.rgba = [1, 0.5, 0, 0.0]
+    tc.contype, tc.conaffinity = 0, 0         # activated by pick_up_tip()
+
+    # don't compute finger<->pipette / finger<->tip contacts (all siblings under hand)
     for other in ("hand", "left_finger", "right_finger"):
+        for body in ("pipette", "tip_mounted"):
+            ex = bench.add_exclude()
+            ex.bodyname1, ex.bodyname2 = body, other
+    # The mounted tip must enter vessels (tubes + wells/plate) freely -> exclude those contacts
+    # ONLY (not every obstacle, so the tip is still avoided against bench/racks/stations).
+    vessel_bodies = [f"tubebody_{r[0]}" for r in REAGENTS] + ["tubebody_enzyme"]
+    vessel_bodies += [f"{prefix}plate" for prefix, _, _ in plate_layout()]
+    for body in vessel_bodies:
         ex = bench.add_exclude()
-        ex.bodyname1, ex.bodyname2 = "pipette", other
+        ex.bodyname1, ex.bodyname2 = "tip_mounted", body
 
 
 @dataclass
@@ -468,6 +527,7 @@ class SceneContract:
     reagents: dict[str, str]              # reagent name -> source site ("enzyme" -> "reagent_enzyme")
     waste_bins: dict[str, dict]           # stream -> {"site": "waste_solid", "geom": "bin_solid"}
     stations: dict[str, str]              # name -> site (reader, incubator, bench, tip_box, ...)
+    tip_slots: list[str]                  # per-tip targeting sites in the box ("tip_site_00"..)
     tip_points: dict[str, str]            # active IK points on the held pipette: name -> site
     obstacles: list[str]                  # collidable geom names the arm must avoid (no robot/floor)
     vessels: dict[str, VesselSpec]        # "well" / "tube" -> dimensions
@@ -480,7 +540,8 @@ class SceneContract:
 
 
 _ROBOT_BODIES = {"link0", "link1", "link2", "link3", "link4", "link5", "link6", "link7",
-                 "hand", "left_finger", "right_finger", "pipette"}   # pipette is held by the arm
+                 "hand", "left_finger", "right_finger", "pipette",   # pipette is held by the arm
+                 "tip_mounted"}   # disposable tip rides on the nozzle (never an obstacle)
 
 
 def scene_contract(model: mujoco.MjModel | None = None) -> SceneContract:
@@ -498,8 +559,9 @@ def scene_contract(model: mujoco.MjModel | None = None) -> SceneContract:
     waste_bins = {s[len("waste_"):]: {"site": s, "geom": "bin_" + s[len("waste_"):]}
                   for s in sites if s.startswith("waste_")}
     tip_points = {s[len("pipette_"):]: s for s in ("pipette_nozzle", "pipette_tip_end") if s in sites}
+    tip_slots = sorted(s for s in sites if s.startswith("tip_site_"))
     classified = (set(wells) | set(reagents.values()) | {v["site"] for v in waste_bins.values()}
-                  | set(tip_points.values()))
+                  | set(tip_points.values()) | set(tip_slots))
     stations = {s: s for s in sites if s not in classified and s != EE_SITE["name"]}
 
     def movable(body_id):   # geoms on a free-jointed body (tubes, plate) are grasp targets
@@ -524,7 +586,7 @@ def scene_contract(model: mujoco.MjModel | None = None) -> SceneContract:
     vessels = {"well": VesselSpec(WELL_R, WELL_H, cap(WELL_R, WELL_H)),
                "tube": VesselSpec(M_TUBE15["r"], M_TUBE15["open_z"], cap(M_TUBE15["r"], M_TUBE15["open_z"]))}
 
-    return SceneContract(wells, reagents, waste_bins, stations, tip_points, obstacles, vessels)
+    return SceneContract(wells, reagents, waste_bins, stations, tip_slots, tip_points, obstacles, vessels)
 
 
 if __name__ == "__main__":
