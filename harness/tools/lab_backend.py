@@ -45,6 +45,16 @@ READER_SPEC = {"wavelength_nm": 405, "range_AU": [0.0, 2.0], "cv": 0.03,
                "note": "plate reader: 3% CV, range 0-2.0 AU"}
 STANDARDS_AU = {"blank": 0.0, "low": 0.5, "high": 1.5}
 
+# Scene reagent names -> assay role (alkaline phosphatase: pNPP substrate, NaOH stop,
+# phosphate is a competitive inhibitor).
+ROLES = {"pnpp": "substrate", "naoh": "stop", "phosphate": "inhibitor",
+         "substrate": "substrate", "stop": "stop", "inhibitor": "inhibitor", "enzyme": "enzyme"}
+
+
+def amount(composition: dict[str, float], role: str) -> float:
+    """uL of the container's contents that play the given assay role."""
+    return sum(v for k, v in composition.items() if ROLES.get(k) == role)
+
 
 @dataclass
 class Container:
@@ -67,10 +77,10 @@ class Container:
             self.composition[k] = self.composition.get(k, 0.0) + volume * v / total
         self.volume_ul += volume
         self.mixed = self.volume_ul == volume  # adding to existing liquid leaves it unmixed
-        if self.reaction_start_min is None and self.composition.get("enzyme", 0) > 0 \
-                and self.composition.get("substrate", 0) > 0:
+        if self.reaction_start_min is None and amount(self.composition, "enzyme") > 0 \
+                and amount(self.composition, "substrate") > 0:
             self.reaction_start_min = t_min
-        if self.stopped_min is None and self.composition.get("stop", 0) > 0:
+        if self.stopped_min is None and amount(self.composition, "stop") > 0:
             self.stopped_min = t_min
 
     def remove(self, volume: float) -> dict[str, float]:
@@ -118,9 +128,9 @@ class PlaceholderAssay:
         if c.volume_ul <= 0:
             return 0.0
         vol = c.volume_ul
-        s = self.STOCK_MM["substrate"] * c.composition.get("substrate", 0) / vol
-        i = self.STOCK_MM["inhibitor"] * c.composition.get("inhibitor", 0) / vol
-        enz = self.ENZYME_UG_PER_UL * c.composition.get("enzyme", 0) / vol * 1000  # ug/mL
+        s = self.STOCK_MM["substrate"] * amount(c.composition, "substrate") / vol
+        i = self.STOCK_MM["inhibitor"] * amount(c.composition, "inhibitor") / vol
+        enz = self.ENZYME_UG_PER_UL * amount(c.composition, "enzyme") / vol * 1000  # ug/mL
         product_mm = 0.0
         if c.reaction_start_min is not None:
             end = t_min if c.stopped_min is None else min(t_min, c.stopped_min)
