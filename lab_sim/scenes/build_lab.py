@@ -42,6 +42,10 @@ LAB_XML = Path(__file__).with_name("lab.xml")
 EE_SITE = dict(name="attachment_site", pos=[0, 0, 0.1034],
                quat=[0.9238795, 0, 0, 0.3826834], group=4)
 
+# ---------------------------------------------------------------------- bench / cameras
+BENCH_CENTER = (0.40, 0.00)        # bench top centre (x, y); the top surface is z=0
+BENCH_HALF = (0.55, 0.70, 0.375)   # half extents (x, y, z) of the bench box
+
 # --------------------------------------------------------------------------- plate(s)
 # Parametric: change these constants ALONE to switch plate configuration.
 #   default     : PLATE_ROWS=4,  PLATE_COLS=6,  WELL_PITCH=0.018, N_PLATES=1  (current)
@@ -235,6 +239,7 @@ def reagent_rack(name, cx, cy) -> str:
 def build() -> str:
     parts: list[str] = []
     px, py = PLATE_CENTER
+    (bx, by), (bhx, bhy, bhz) = BENCH_CENTER, BENCH_HALF
 
     # well plate(s) — parametric (rows/cols/pitch/count via constants above)
     for prefix, cx, cy in plate_layout():
@@ -387,7 +392,7 @@ def build() -> str:
   <worldbody>
     <light pos="0.4 0 1.5" dir="0 0 -1"/>
     <geom name="floor" type="plane" size="0 0 0.05" pos="0 0 -0.75" material="lab_floor"/>
-    <geom name="bench" type="box" size="0.55 0.70 0.375" pos="0.40 0 -0.375" material="bench_top"/>
+    <geom name="bench" type="box" size="{bhx} {bhy} {bhz}" pos="{bx} {by} {-bhz}" material="bench_top"/>
 
     <camera name="front" pos="1.60 0 0.55" xyaxes="0 1 0 -0.423 0 0.906"/>
     <camera name="side" pos="0.45 -1.30 0.70" xyaxes="1 0 0 0 0.5 0.866"/>
