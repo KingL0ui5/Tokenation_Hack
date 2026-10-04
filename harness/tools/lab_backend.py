@@ -104,18 +104,27 @@ class LabBackend:
     def change_tip(self) -> dict:
         """Discard the mounted tip (if any) into solid waste and mount a fresh one from the box.
         The box is finite, so this fails once it is empty. Which slot was used and what the
-        discarded tip had touched are ledger truth, not returned to the agent."""
+        discarded tip had touched are ledger truth, not returned to the agent. Both halves move
+        the arm (to the waste bin, then the tip box), so a collision fails it like pipette()."""
         sk = self.skills
         out = {"ejected_slot": None, "ejected_contacts": [], "new_slot": None}
         if sk.has_tip:
             out["ejected_slot"] = getattr(sk, "_cur_tip_slot", None)
             out["ejected_contacts"] = list(sk.tip_contacts)
             r = sk.eject_tip()
+            bad = self._drain_incidents()
+            if bad:
+                return {"ok": False, "reason": f"collision: {bad[0]['carried']} vs {bad[0]['other']}",
+                        **out, "incidents": bad}
             if not r.ok:
                 return {"ok": False, "reason": f"eject: {r.reason}", **out}
         r = sk.pick_up_tip()
         self.clock_min += TIP_CHANGE_MIN
         out["new_slot"] = getattr(sk, "_cur_tip_slot", None) if r.ok else None
+        bad = self._drain_incidents()
+        if bad:
+            return {"ok": False, "reason": f"collision: {bad[0]['carried']} vs {bad[0]['other']}",
+                    **out, "incidents": bad}
         return {"ok": r.ok, "reason": None if r.ok else r.reason, **out}
 
     def refresh_tips(self) -> dict:
