@@ -4,24 +4,22 @@ Sequence: pick_up_tip -> aspirate from a reagent tube -> dispense into a well ->
 then a final pick_up_tip(seat=False) to show the 'tip not seated' fault. Frames are captured
 by wrapping PipetteSkills._step so the whole motion is visible (not just end poses).
 
-Run from lab_sim/:  python -m demos.tips   ->   experiments/tips.mp4 (gitignored; regenerate anytime)
+Run from lab_sim/:  python -m demos.tips [--quick | --full]  ->  experiments/tips.mp4
+(gitignored; regenerate anytime; see demos/render.py for the modes)
 """
 
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-
 import mujoco
 
-from lab_sim.demos.grid import GridRecorder
+from lab_sim.demos.render import Recorder, mode_from_argv
 from lab_sim.scenes.build_lab import TIP_LEN, load_model, scene_contract
 from lab_sim.robot.skills import PipetteSkills
 
 logging.disable(logging.WARNING)
 
 OUT = "experiments/tips.mp4"
-RENDER_EVERY = 8      # 4 views per frame are costly; 8 steps @ 15 fps keeps the same playback speed
 MAX_STEPS = 40_000       # hard cap on physics steps so the demo can never hang
 
 
@@ -38,13 +36,12 @@ def main() -> int:
     print(f"tip length = {tip_len_mm:.0f} mm  (AutoBio tip_200ul -> 200 uL capacity)")
     print(f"pipette_tip_end at nozzle - {tip_len_mm:.0f} mm; tip box has {len(sk.tip_slots)} slots")
 
-    Path(OUT).parent.mkdir(parents=True, exist_ok=True)
-    rec = GridRecorder(model, data, OUT, sk.tip, fps=15)      # close-up follows the active tip point
     label = {"text": ""}
 
-    def render():
+    def overlay():
         st = sk.tip_status()
-        rec.frame(label["text"], f"tips left: {st['tips_remaining']}  has_tip: {st['has_tip']}")
+        return label["text"], f"tips left: {st['tips_remaining']}  has_tip: {st['has_tip']}", (200, 255, 200)
+    rec = Recorder(model, data, OUT, mode_from_argv(), sk.tip, overlay)   # close-up follows the tip
 
     orig_step = sk._step
     counter = {"n": 0}
@@ -54,8 +51,7 @@ def main() -> int:
             raise RuntimeError(f"step limit ({MAX_STEPS}) exceeded")
         orig_step()
         counter["n"] += 1
-        if counter["n"] % RENDER_EVERY == 0:
-            render()
+        rec.step()
     sk._step = step_and_render
 
     def hold(seconds=0.5):
@@ -95,7 +91,6 @@ def main() -> int:
     rec.close()
     print("tip_status:", sk.tip_status())
     print("tip_history:", sk.tip_history)
-    print(f"wrote {OUT}")
     return 0
 
 

@@ -2,54 +2,48 @@
 
 Three scenes, matching the acceptance tests in tests/test_held_object_collisions.py:
   (a) carry a tube from rack A to the spare hole in rack B -- zero incidents.
-  (b) the mounted pipette, with a disposable tip, travelling between rack A, rack B and a
-      well, entering each vessel to its pipetting depth -- zero incidents.
+  (b) two LabBackend.pipette() transfers (rack A -> well, rack B -> well) with ONE disposable
+      tip that stays on between them (main's keep-the-tip behaviour), entering each vessel to
+      its pipetting depth -- zero incidents.
   (c) a deliberate collision: the same carried tube driven sideways through a neighbour's
       slot (skipping the safe lift) -- caught and reported via PipetteSkills.incidents, the
       same channel harness/tools/lab_backend.py drains to fail a tool.
 
-Run from lab_sim/:  python -m demos.held_object_collisions -> experiments/held_object_collisions.mp4
+Run from lab_sim/:  python -m demos.held_object_collisions [--quick | --full]
+                    -> experiments/held_object_collisions.mp4 (see demos/render.py for the modes)
 """
 
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
-import mujoco
 import numpy as np
 
-from lab_sim.demos.grid import GridRecorder
-from lab_sim.scenes.build_lab import load_model, scene_contract
-from lab_sim.robot.skills import PipetteSkills
+from harness.tools.lab_backend import LabBackend
+from lab_sim.demos.render import Recorder, mode_from_argv
 
 logging.disable(logging.WARNING)
 
 OUT = "experiments/held_object_collisions.mp4"
-RENDER_EVERY = 8      # 4 views per frame are costly; 8 steps @ 15 fps keeps the same playback speed
 MAX_STEPS = 60_000       # hard cap on physics steps (~2 min sim) so the demo can never hang
 
 
 def main() -> int:
-    model = load_model()
-    data = mujoco.MjData(model)
-    mujoco.mj_resetDataKeyframe(model, data, 0)
-    mujoco.mj_forward(model, data)
-    contract = scene_contract(model)
-    sk = PipetteSkills(model, data, contract.obstacles, safe_z=0.22)
-
-    Path(OUT).parent.mkdir(parents=True, exist_ok=True)
+    mode = mode_from_argv()
+    backend = LabBackend()
+    model, data, sk = backend.model, backend.data, backend.skills
 
     def closeup_target():          # the carried tube while grasped, else the active pipette point
         if sk.held_object:
             return data.xpos[model.body(sk.held_object).id] + np.array([0, 0, 0.06])
         return sk.tip()
-    rec = GridRecorder(model, data, OUT, closeup_target, fps=15)
     label = {"text": ""}
 
-    def render():
+    def overlay():
         n = len(sk.incidents)
-        rec.frame(label["text"], f"incidents: {n}", (120, 220, 120) if n == 0 else (80, 80, 255))
+        tip = f"  tip: slot {sk._cur_tip_slot}" if sk.has_tip else ""
+        return label["text"], f"incidents: {n}{tip}", (120, 220, 120) if n == 0 else (80, 80, 255)
+    rec = Recorder(model, data, OUT, mode, closeup_target, overlay)
 
     orig_step = sk._step
     counter = {"n": 0}
@@ -59,8 +53,7 @@ def main() -> int:
             raise RuntimeError(f"step limit ({MAX_STEPS}) exceeded")
         orig_step()
         counter["n"] += 1
-        if counter["n"] % RENDER_EVERY == 0:
-            render()
+        rec.step()
     sk._step = step_and_render
 
     def hold(seconds=0.4):
@@ -88,12 +81,17 @@ def main() -> int:
     assert sk.incidents == [], "carry should be clean"
 
     # ---- (b) pipette + tip travelling between racks -------------------------------------
-    label["text"] = "(b) pipette+tip entering: rack A -> rack B -> well"
-    show("pick_up_tip", sk.pick_up_tip()); hold(0.2)
-    for site, where in (("reagent_tris", "rack A"), ("reagent_zncl2", "rack B"), ("well_A1", "plate")):
-        show(f"travel_to({site}) [{where}]", sk.travel_to(site, clearance=0.04))
-        show(f"enter_vessel({site})", sk.enter_vessel(site, contract)); hold(0.3)
-        show("ascend", sk.ascend())
+    slots = []
+    for src, dst, where in (("reagent_tris", "well_A1", "rack A"), ("reagent_zncl2", "well_A2", "rack B")):
+        label["text"] = f"(b) pipette {src} [{where}] -> {dst}, tip kept on"
+        r = backend.pipette(src, dst)
+        slots.append(r["tip_slot"])
+        print(f"  {'OK ' if r['ok'] else 'FAIL'} pipette({src} -> {dst})  tip_slot={r['tip_slot']}"
+              f"  touched={r['touched']}" + (f"  ({r['reason']})" if not r["ok"] else ""))
+        assert r["ok"], r.get("reason")
+        hold(0.3)
+    assert slots[0] == slots[1] and sk.has_tip, "the tip should stay on between transfers"
+    label["text"] = "(b) done: eject the (carried-over) tip"
     show("eject_tip", sk.eject_tip()); hold(0.3)
     print(f"  incidents after (b): {sk.incidents}")
     assert sk.incidents == [], "tip travel should be clean"
@@ -121,7 +119,6 @@ def main() -> int:
 
     rec.close()
     print(f"total incidents recorded: {len(sk.incidents)} (expected: 1, from scene (c) only)")
-    print(f"wrote {OUT}")
     return 0
 
 
